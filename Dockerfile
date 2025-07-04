@@ -7,7 +7,7 @@ EXPOSE 5000
 EXPOSE 80
 
 # Make the startup script executable
-RUN chmod +x ./start.sh
+RUN chmod +x ./start.sh ./tapo-rest
 
 # Use the startup script as the command
 CMD ["./start.sh"]
