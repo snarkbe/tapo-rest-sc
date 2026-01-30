@@ -174,3 +174,4 @@ cython_debug/
 .pypirc
 app/config.json
 app/devices.json
+docker_run.txt

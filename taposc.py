@@ -272,7 +272,7 @@ def get_all_device_power():
                         "subtracted_power": subtract_power,
                         "adjusted_power": adjusted_power
                     }
-                    logging.info(f"Applied subtraction for '{device_name}': {original_power} - {subtract_power} = {adjusted_power}")
+                    # logging.info(f"Applied subtraction for '{device_name}': {original_power} - {subtract_power} = {adjusted_power}")
                 else:
                     logging.warning(f"Cannot apply subtraction for '{device_name}': Power values not numeric")
                     main_result["data"]["subtraction_error"] = "Power values not numeric"
@@ -282,6 +282,36 @@ def get_all_device_power():
             except Exception as e:
                 logging.error(f"Error applying subtraction for '{device_name}': {e}", exc_info=True)
                 main_result["data"]["subtraction_error"] = f"Error during subtraction: {str(e)}"
+
+    # Calculate total power from all devices
+    total_power = 0
+    total_power_devices = []
+
+    for result in results:
+        if result.get("status") == "success" and "data" in result:
+            data = result.get("data", {})
+            power_value = None
+            
+            # Try to find current_power in the response
+            if "result" in data and "current_power" in data["result"]:
+                power_value = data["result"]["current_power"]
+            elif "current_power" in data:
+                power_value = data["current_power"]
+                
+            if isinstance(power_value, (int, float)):
+                total_power += power_value
+                total_power_devices.append(result.get("device"))
+
+    # Add total power entry
+    total_entry = {
+        "device": "Total Consumption",
+        "status": "success",
+        "data": {
+            "current_power": total_power,
+            "included_devices": total_power_devices
+        }
+    }
+    results.append(total_entry)
 
     return jsonify(results), 200
 
