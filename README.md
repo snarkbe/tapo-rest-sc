@@ -132,16 +132,38 @@ Keys must be **at least 32 characters and alphanumeric only** — no dashes or
 underscores. The service refuses to start if a key does not qualify, rather than
 running with a weak one.
 
-Environment overrides, useful for keeping secrets out of the file:
+### Environment variables
 
 | Variable | Effect |
 | --- | --- |
-| `TAPO_EMAIL` / `TAPO_PASSWORD` | Override `tapo_credentials`. |
-| `TAPO_API_KEYS` | Comma-separated API keys, added to any in the file. |
+| `TAPO_EMAIL` / `TAPO_PASSWORD` | **Override** `tapo_credentials` in the file. See the warning below. |
+| `TAPO_API_KEYS` | Comma-separated API keys, **added to** any in the file. |
 | `TAPOSC_CONFIG` | Full path to the configuration file, instead of `app/config.json`. |
 | `TAPOSC_PORT` | Port to listen on. Defaults to `5000`. |
 | `TAPOSC_LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, … |
 | `TZ` | The container's timezone, e.g. `Europe/Brussels`. Only affects `get-*-energy-data`, whose day and month boundaries are local ones. Without it the container runs in UTC and a "day" starts at 00:00 UTC. |
+
+> ⚠️ **`TAPO_EMAIL` and `TAPO_PASSWORD` beat the configuration file.** If both are
+> set, the environment wins and `tapo_credentials` in `config.json` is ignored.
+> That bites when you rotate your Tapo password: editing the file alone changes
+> nothing, and the service keeps trying the old credentials from the
+> environment. The startup log says so explicitly when it happens:
+>
+> ```
+> TAPO_EMAIL and TAPO_PASSWORD set in the environment, overriding
+> 'tapo_credentials' in /app/config.json. Editing that file alone will not
+> change how this service authenticates -- change the environment variable, or
+> unset it to let the file win.
+> ```
+>
+> **Pick one source and stick to it.** Either keep the credentials in
+> `config.json` and set neither variable, or set both variables and leave
+> `tapo_credentials` out of the file. Mixing them is what causes surprises.
+>
+> There is no `AUTH_PASSWORD`. It existed when this project talked to a separate
+> tapo-rest process over HTTP; nothing reads it now. Delete it from your
+> container configuration. Its replacement, if you want the `/actions` routes,
+> is an API key — see [Do I need an API key?](#do-i-need-an-api-key).
 
 ### Upgrading from an older version of this project
 
@@ -155,6 +177,10 @@ Two steps, both on your mounted `app/` directory:
    `login_password`. Nothing reads those keys any more, and leaving that file in
    place would shadow the renamed one. The service detects it and says so
    instead of failing obscurely.
+3. **Clear out the old environment variables.** `AUTH_PASSWORD` is dead. And note
+   that `TAPO_EMAIL` / `TAPO_PASSWORD`, which earlier versions of this project
+   ignored, are now read and take precedence over the file — so leaving them set
+   silently makes `config.json` credentials inert.
 
 You do not need to add an API key unless you want the `/actions` routes.
 
