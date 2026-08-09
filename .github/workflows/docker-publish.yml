@@ -21,7 +21,33 @@ env:
 
 
 jobs:
+  test:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # The suite runs entirely against stubs: no Tapo device, no network.
+      - name: Run tests
+        run: pytest -q
+
   build:
+
+    # Never publish an image whose tests did not pass.
+    needs: test
 
     runs-on: ubuntu-latest
     permissions:
