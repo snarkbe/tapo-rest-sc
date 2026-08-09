@@ -1,20 +1,24 @@
-FROM python:3.13-alpine
+FROM python:3.13-slim-bookworm
 LABEL maintainer="Gilles Reichert"
+
+# The application lives at the filesystem root and reads its configuration from
+# /app/config.json, which is expected to be a mounted volume.
 WORKDIR /
-COPY start.sh requirements.txt taposc.py tapo-rest ./
-RUN pip3 install -r requirements.txt
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+COPY start.sh taposc.py tapo_config.py tapo_devices.py tapo_power.py \
+     tapo_rest_api.py tapo_state.py ./
+RUN chmod +x ./start.sh
+
 EXPOSE 5000
-EXPOSE 80
 
-# Make the startup script executable
-RUN chmod +x ./start.sh ./tapo-rest
-
-# Use the startup script as the command
 CMD ["./start.sh"]
+
 # Build the Docker image with the command:
-# docker build -t taposc . 
-# Run the Docker container with the command:
-# docker run -d -p 5000:5000 taposc 
+# docker build -t taposc .
+# Run it, mounting the directory that holds config.json:
+# docker run -d -p 5000:5000 -v /path/to/local/app:/app --name tapo taposc
 # To stop the container, use:
 # docker stop <container_id>
 # To remove the container, use:
@@ -24,8 +28,4 @@ CMD ["./start.sh"]
 # To view logs, use:
 # docker logs <container_id>
 # To run the container in interactive mode, use:
-# docker run -it -p 5000:5000 taposc /bin/sh
-# To run the container with a specific name, use:
-# docker run -d --name my_taposc -p 5000:5000 taposc
-# To run the container with a volume, use:
-# docker run -d -p 5000:5000 -v /path/to/local/dir:/app taposc
+# docker run -it -p 5000:5000 -v /path/to/local/app:/app taposc /bin/sh
