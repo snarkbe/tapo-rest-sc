@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,6 +37,22 @@ KNOWN_DEVICE_TYPES = (
 )  # fmt: skip
 
 MIN_API_KEY_LENGTH = 32
+
+_NON_SLUG = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(name: str) -> str:
+    """A URL-safe stand-in for a device name.
+
+    Device names are descriptive -- "UPS: NAS / Router / Fiber" -- and a `/` in
+    one cannot survive a URL path, since percent-encoding is undone before
+    routing. The slug ("ups-nas-router-fiber") gives such a device an address.
+    Returns an empty string for a name with nothing ASCII in it.
+    """
+    ascii_only = (
+        unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    )
+    return _NON_SLUG.sub("-", ascii_only.lower()).strip("-")
 
 
 class ConfigError(Exception):
@@ -55,10 +73,16 @@ class DeviceEntry:
     # taposc-only: name of another device whose power is subtracted from this one.
     substract: str | None = None
 
+    @property
+    def slug(self) -> str:
+        """The URL-safe identifier this device also answers to."""
+        return slugify(self.name)
+
     def conn_infos(self) -> dict:
         """The shape `/devices` returns."""
         return {
             "name": self.name,
+            "slug": self.slug,
             "device_type": self.device_type,
             "ip_addr": self.ip_addr,
         }
@@ -253,16 +277,23 @@ def _parse_devices(
         seen.add(name)
 
         if "/" in name:
-            # The name is a path segment on the /devices routes, and a '/' in it
-            # cannot be escaped: percent-encoding is undone before routing. Not
-            # fatal -- the aggregated power response addresses devices by name,
-            # not by URL, so the dashboard widget is unaffected.
-            logger.warning(
-                "Device '%s' has a '/' in its name, so it cannot be reached on "
-                "the /devices/... routes. It still appears in "
-                "/get_all_device_power. Rename it to control it over HTTP.",
-                name,
-            )
+            # A '/' cannot survive a path segment: percent-encoding is undone
+            # before routing. Such a device is addressed by its slug instead.
+            slug = slugify(name)
+            if slug:
+                logger.info(
+                    "Device '%s' contains a '/', so address it as '%s' on the "
+                    "/devices routes.",
+                    name,
+                    slug,
+                )
+            else:
+                logger.warning(
+                    "Device '%s' contains a '/' and has no ASCII characters to "
+                    "build a slug from, so it cannot be reached on the /devices "
+                    "routes. It still appears in /get_all_device_power.",
+                    name,
+                )
 
         ip_addr = entry.get("ip_addr")
         if not ip_addr:

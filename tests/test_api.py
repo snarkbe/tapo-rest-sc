@@ -68,8 +68,18 @@ def test_devices_lists_connection_infos(make_client):
 
     assert response.status_code == 200
     assert response.json() == [
-        {"name": "Washer", "device_type": "P115", "ip_addr": "192.168.0.45"},
-        {"name": "Bulb", "device_type": "L530", "ip_addr": "192.168.0.50"},
+        {
+            "name": "Washer",
+            "slug": "washer",
+            "device_type": "P115",
+            "ip_addr": "192.168.0.45",
+        },
+        {
+            "name": "Bulb",
+            "slug": "bulb",
+            "device_type": "L530",
+            "ip_addr": "192.168.0.50",
+        },
     ]
 
 
@@ -79,6 +89,63 @@ def test_unknown_device_is_a_404_naming_it(make_client):
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Unknown device: Nope"}
+
+
+def test_a_name_a_url_cannot_carry_is_reachable_by_its_slug(make_client):
+    """A '/' in a name cannot be escaped: %2F is decoded before routing."""
+    devices = [
+        {"name": "UPS: NAS / Router / Fiber", "device_type": "P115", "ip_addr": "1.1.1.1"},
+        {"name": "TV / TV box / Soundbar", "device_type": "P110", "ip_addr": "1.1.1.2"},
+    ]
+    client, _ = make_client(
+        devices,
+        {"UPS: NAS / Router / Fiber": {"power": 74}, "TV / TV box / Soundbar": {"power": 81}},
+    )
+
+    assert client.get("/devices/ups-nas-router-fiber/power", headers=AUTH).json() == {
+        "current_power": 74
+    }
+    assert client.get("/devices/tv-tv-box-soundbar/power", headers=AUTH).json() == {
+        "current_power": 81
+    }
+    # The raw name still 404s, which is why the slug exists.
+    assert (
+        client.get("/devices/UPS: NAS / Router / Fiber/power", headers=AUTH).status_code
+        == 404
+    )
+
+
+def test_devices_publishes_the_slug_to_use(make_client):
+    client, _ = make_client(
+        [{"name": "UPS: NAS / Router / Fiber", "device_type": "P115", "ip_addr": "1.1.1.1"}]
+    )
+    entry = client.get("/devices", headers=AUTH).json()[0]
+
+    assert entry["name"] == "UPS: NAS / Router / Fiber"
+    assert entry["slug"] == "ups-nas-router-fiber"
+
+
+def test_an_exact_name_wins_over_another_devices_slug(make_client):
+    """A device literally named 'washer' must not be shadowed by 'Washer'."""
+    devices = [
+        {"name": "Washer", "device_type": "P115", "ip_addr": "1.1.1.1"},
+        {"name": "washer", "device_type": "P115", "ip_addr": "1.1.1.2"},
+    ]
+    client, _ = make_client(devices, {"Washer": {"power": 1}, "washer": {"power": 2}})
+
+    assert client.get("/devices/Washer/power", headers=AUTH).json() == {"current_power": 1}
+    assert client.get("/devices/washer/power", headers=AUTH).json() == {"current_power": 2}
+
+
+def test_colliding_slugs_are_dropped_rather_than_guessed(make_client):
+    devices = [
+        {"name": "Office: PC / Laptop", "device_type": "P115", "ip_addr": "1.1.1.1"},
+        {"name": "Office / PC / Laptop", "device_type": "P115", "ip_addr": "1.1.1.2"},
+    ]
+    client, _ = make_client(devices, {n["name"]: {"power": 1} for n in devices})
+
+    # Both reduce to 'office-pc-laptop'; neither claims it.
+    assert client.get("/devices/office-pc-laptop/power", headers=AUTH).status_code == 404
 
 
 def test_device_names_with_spaces_work_as_path_segments(make_client):

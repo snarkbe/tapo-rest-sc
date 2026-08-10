@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tapo_config import ConfigError, load_config  # noqa: E402
+from tapo_config import ConfigError, load_config, slugify  # noqa: E402
 
 CREDENTIALS = {"email": "user@example.com", "password": "secret"}
 DEVICE = {"name": "Washer", "device_type": "P115", "ip_addr": "192.168.1.11"}
@@ -166,21 +166,37 @@ def test_missing_file_names_the_path(tmp_path):
         load_config(tmp_path / "nope.json")
 
 
-def test_a_slash_in_a_device_name_warns_without_failing(tmp_path, caplog):
-    """The name is a path segment now, and '/' cannot be escaped in one."""
+def test_a_slash_in_a_device_name_reports_the_slug_to_use(tmp_path, caplog):
+    """A '/' cannot survive a path segment, so the log names the alternative."""
     path = write(
         tmp_path,
         {
             "tapo_credentials": CREDENTIALS,
             "devices": [
-                {"name": "Cave/Garage", "device_type": "P110", "ip_addr": "192.168.0.10"}
+                {
+                    "name": "UPS: NAS / Router / Fiber",
+                    "device_type": "P110",
+                    "ip_addr": "192.168.0.10",
+                }
             ],
         },
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         config = load_config(path)
 
-    # Still loaded: the aggregated power response addresses devices by name.
-    assert [device.name for device in config.devices] == ["Cave/Garage"]
-    assert any("cannot be reached" in record.getMessage() for record in caplog.records)
+    device = config.devices[0]
+    assert device.name == "UPS: NAS / Router / Fiber"
+    assert device.slug == "ups-nas-router-fiber"
+    assert any("ups-nas-router-fiber" in record.getMessage() for record in caplog.records)
+
+
+def test_slugs_are_ascii_lowercase_and_collapse_punctuation():
+    assert slugify("UPS: NAS / Router / Fiber") == "ups-nas-router-fiber"
+    assert slugify("TV / TV box / Soundbar") == "tv-tv-box-soundbar"
+    assert slugify("Office: PC / Laptop / Printer") == "office-pc-laptop-printer"
+    assert slugify("Washer") == "washer"
+    assert slugify("Salon Éclairage") == "salon-eclairage"
+    assert slugify("  --Cave--  ") == "cave"
+    # Nothing ASCII to work with: no slug, and the caller warns.
+    assert slugify("日本") == ""

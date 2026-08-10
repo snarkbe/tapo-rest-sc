@@ -93,7 +93,7 @@ Start from the committed template — it is a complete, working configuration:
 | Key | Meaning |
 | --- | --- |
 | `tapo_credentials` | Your Tapo **account** email and password — the same ones you use in the Tapo app. Devices are contacted locally over your LAN; these only authenticate you to them. |
-| `devices[].name` | Any name you like. This is what `?device=` and the widget's `device` field use. |
+| `devices[].name` | Any name you like — this is what the widget's `device` field shows. Names containing a `/` are addressed on the API by their slug, which `GET /devices` publishes. |
 | `devices[].device_type` | One of `L510` `L520` `L530` `L535` `L610` `L630` `L900` `L920` `L930` `P100` `P105` `P110` `P110M` `P115` `P300` `P304` `P304M` `P316`. |
 | `devices[].ip_addr` | The device's address on your LAN. Give it a DHCP reservation. |
 | `devices[].substract` | Optional. The name of another configured device whose power is subtracted from this one — for plugs chained behind one another. Never goes below zero. |
@@ -198,7 +198,7 @@ from the code, so it is always current. `/openapi.json` has the raw schema.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `GET` | `/devices` | The configured devices. |
+| `GET` | `/devices` | The configured devices, each with the `slug` it also answers to. |
 | `GET` | `/devices/{name}` | Device info, as the device reports it. |
 | `GET` | `/devices/{name}/usage` | Runtime and power-on statistics. |
 | `POST` | `/devices/{name}/on` | Switch on. |
@@ -220,10 +220,24 @@ Two things worth knowing:
   brightness lands and the effect then fails, the answer is a `400` but the
   brightness has already changed. The `applied` field of a successful response
   lists exactly what was set.
-- A device whose **name contains a `/`** cannot be addressed on these routes —
-  the name is a path segment, and `%2F` is decoded before routing. Such a device
-  still appears in `/get_all_device_power`, and the service logs a warning at
-  startup. Rename it to control it over HTTP.
+- Descriptive names are fine, but a **`/` in a name cannot survive a URL path** —
+  `%2F` is decoded before routing. Every device therefore also answers to a
+  **slug**, which `GET /devices` publishes:
+
+  ```json
+  { "name": "UPS: NAS / Router / Fiber", "slug": "ups-nas-router-fiber",
+    "device_type": "P115", "ip_addr": "192.168.0.103" }
+  ```
+
+  ```shell
+  curl -H 'Authorization: Bearer <key>' \
+       'http://localhost:5000/devices/ups-nas-router-fiber/power'
+  ```
+
+  The exact name always wins, so `/devices/Washer/power` keeps working. Nothing
+  needs renaming: `/get_all_device_power` still reports the full name, so your
+  dashboard labels are untouched. If two names reduce to the same slug the
+  service says so in the log and neither claims it — use their exact names.
 
 ```shell
 # Dim a bulb to 40% and turn it deep blue
@@ -267,6 +281,8 @@ bundled as a binary. They have been removed and now answer `404`.
 | `GET /actions/<model>/get-child-device-list?device=X` | `GET /devices/X/children` |
 | `GET /actions` | `GET /openapi.json`, or `/docs` |
 | `GET /refresh-session?device=X` | *removed* — expired sessions are re-established on the next request |
+
+`X` above is the device name, or its slug when the name contains a `/`.
 
 Two response shapes changed: `energy/history` returns the device's own
 `{data, start_timestamp, interval, local_time}` instead of the reshaped

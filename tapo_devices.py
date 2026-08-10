@@ -343,6 +343,27 @@ class DeviceRegistry:
 
     devices: dict[str, TapoDevice] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Index the devices by slug as well, for names a URL cannot carry."""
+        candidates: dict[str, list[TapoDevice]] = {}
+        for device in self.devices.values():
+            slug = device.entry.slug
+            # Never let a slug shadow a device whose real name it matches.
+            if slug and slug not in self.devices:
+                candidates.setdefault(slug, []).append(device)
+
+        self._by_slug: dict[str, TapoDevice] = {}
+        for slug, matches in candidates.items():
+            if len(matches) > 1:
+                logger.warning(
+                    "Devices %s all reduce to the slug '%s'; address them by "
+                    "their exact name instead.",
+                    ", ".join(f"'{device.name}'" for device in matches),
+                    slug,
+                )
+                continue
+            self._by_slug[slug] = matches[0]
+
     @classmethod
     def from_config(cls, config: Config) -> "DeviceRegistry":
         credentials = Credentials(config.email, config.password)
@@ -353,7 +374,11 @@ class DeviceRegistry:
         )
 
     def get(self, name: str) -> TapoDevice | None:
-        return self.devices.get(name)
+        """A device by its exact name, or failing that by its slug."""
+        device = self.devices.get(name)
+        if device is not None:
+            return device
+        return self._by_slug.get(name)
 
     def conn_infos(self) -> list[dict]:
         return [device.entry.conn_infos() for device in self.devices.values()]

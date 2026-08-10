@@ -65,6 +65,12 @@ def require_api_key(
 
 
 def get_device(name: str, request: Request) -> TapoDevice:
+    """Resolve the path segment, which is a device name or its slug.
+
+    Descriptive names such as "UPS: NAS / Router / Fiber" cannot survive a path
+    segment, so `GET /devices` publishes a slug for each device that works in
+    their place. See `tapo_config.slugify`.
+    """
     device = request.app.state.service.registry.get(name)
     if device is None:
         raise HTTPException(status_code=404, detail=f"Unknown device: {name}")
@@ -98,6 +104,9 @@ class DeviceInfo(BaseModel):
     """A configured device, as it appears in the configuration file."""
 
     name: str
+    # The URL-safe identifier the routes also accept, for names a path segment
+    # cannot carry -- anything containing a `/`.
+    slug: str
     device_type: str
     ip_addr: str
 
