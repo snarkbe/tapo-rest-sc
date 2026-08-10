@@ -214,6 +214,17 @@ A device only accepts what it physically supports — asking a plug to change
 colour answers `400 Device 'Washer' (P115) does not support the 'Light' feature`.
 Nothing is hard-coded per model: python-kasa asks the device.
 
+Two things worth knowing:
+
+- `/light` applies its settings in order and does not roll them back. If the
+  brightness lands and the effect then fails, the answer is a `400` but the
+  brightness has already changed. The `applied` field of a successful response
+  lists exactly what was set.
+- A device whose **name contains a `/`** cannot be addressed on these routes —
+  the name is a path segment, and `%2F` is decoded before routing. Such a device
+  still appears in `/get_all_device_power`, and the service logs a warning at
+  startup. Rename it to control it over HTTP.
+
 ```shell
 # Dim a bulb to 40% and turn it deep blue
 curl -X POST -H 'Authorization: Bearer <key>' \

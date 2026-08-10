@@ -252,6 +252,18 @@ def _parse_devices(
             raise ConfigError(f"Duplicate device name: '{name}'")
         seen.add(name)
 
+        if "/" in name:
+            # The name is a path segment on the /devices routes, and a '/' in it
+            # cannot be escaped: percent-encoding is undone before routing. Not
+            # fatal -- the aggregated power response addresses devices by name,
+            # not by URL, so the dashboard widget is unaffected.
+            logger.warning(
+                "Device '%s' has a '/' in its name, so it cannot be reached on "
+                "the /devices/... routes. It still appears in "
+                "/get_all_device_power. Rename it to control it over HTTP.",
+                name,
+            )
+
         ip_addr = entry.get("ip_addr")
         if not ip_addr:
             raise ConfigError(f"Device '{name}' has no 'ip_addr'")

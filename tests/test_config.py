@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -163,3 +164,23 @@ def test_a_leading_comment_line_is_tolerated(tmp_path):
 def test_missing_file_names_the_path(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.json")
+
+
+def test_a_slash_in_a_device_name_warns_without_failing(tmp_path, caplog):
+    """The name is a path segment now, and '/' cannot be escaped in one."""
+    path = write(
+        tmp_path,
+        {
+            "tapo_credentials": CREDENTIALS,
+            "devices": [
+                {"name": "Cave/Garage", "device_type": "P110", "ip_addr": "192.168.0.10"}
+            ],
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        config = load_config(path)
+
+    # Still loaded: the aggregated power response addresses devices by name.
+    assert [device.name for device in config.devices] == ["Cave/Garage"]
+    assert any("cannot be reached" in record.getMessage() for record in caplog.records)

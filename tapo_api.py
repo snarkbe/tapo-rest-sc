@@ -174,6 +174,10 @@ async def set_light(
 
     Anything the device does not support answers 400, naming the missing
     feature. `hue` and `saturation` go together, since they set one colour.
+
+    Settings are applied in order and are not rolled back: if a later one fails,
+    the response is a 400 but the earlier ones have already reached the device.
+    `applied` lists what actually landed on a success.
     """
     if all(v is None for v in (brightness, hue, saturation, color_temp, effect)):
         raise HTTPException(
