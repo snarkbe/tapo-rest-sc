@@ -1,8 +1,8 @@
 """Configuration loading for taposc.
 
 A single JSON file holds everything: the Tapo account credentials, the server's
-API keys and the device list. It is a superset of the config the `tapo-rest`
-binary used to read, so an existing `devices.json` loads unchanged.
+API keys and the device list. It is a superset of the format earlier versions
+of this project read, so an existing `devices.json` loads unchanged.
 
     {
         "tapo_credentials": { "email": "...", "password": "..." },
@@ -25,7 +25,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Device type names accepted in `device_type`, matching tapo-rest's TapoDeviceType.
+# Device type names accepted in `device_type`. Only used to catch typos in the
+# configuration: what a device can actually do is decided by the device itself.
 KNOWN_DEVICE_TYPES = (
     "L510", "L520", "L530", "L535", "L610", "L630",
     "L900", "L920", "L930",
@@ -55,7 +56,7 @@ class DeviceEntry:
     substract: str | None = None
 
     def conn_infos(self) -> dict:
-        """The shape `/devices` returns, matching tapo-rest's TapoConnectionInfos."""
+        """The shape `/devices` returns."""
         return {
             "name": self.name,
             "device_type": self.device_type,
@@ -170,9 +171,8 @@ def _parse_credentials(raw: dict) -> tuple[str, str]:
 def _parse_api_keys(raw: dict) -> tuple[ApiKey, ...]:
     """API keys from `server.api_keys`, or from the TAPO_API_KEYS env var.
 
-    Both shapes of the server block are accepted: the flat `server_password` of
-    tapo-rest v0.4.3 and the `server: { password, api_keys }` of v0.5.0. Neither
-    password is used for anything -- they are parsed and ignored.
+    Older configurations carried a `server_password`, flat or inside `server`.
+    It is not read by anything: only `server.api_keys` grants access now.
     """
     from_env = os.environ.get("TAPO_API_KEYS", "")
     entries: list[ApiKey] = [

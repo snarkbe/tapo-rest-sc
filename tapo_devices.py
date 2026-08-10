@@ -1,15 +1,15 @@
 """Talking to Tapo devices with python-kasa.
 
-This is the replacement for the bundled `tapo-rest` Rust binary. It keeps the
-same shape as tapo-rest's device layer: one object per configured device,
-holding a lazily-established and then cached connection, plus a table of which
-actions each device model supports.
+One object per configured device, holding a lazily-established and then cached
+connection, plus the handful of operations the API exposes.
 
-Payloads are the device's own JSON, so the field names match what tapo-rest
-returned. Two normalisations are applied on top, mirroring what the `tapo`
-crate does: `ssid`/`nickname` are base64-decoded, and `local_time` is rendered
-in ISO form. `get_energy_data` is reshaped into tapo-rest's
-`{local_time, start_date_time, entries, interval_length}`.
+There is no table of which model supports which action: python-kasa already
+knows. `TapoDevice.module()` raises `ActionError` when a device does not carry
+the feature being asked for, which the API turns into a 400.
+
+Payloads are the device's own JSON. One normalisation is applied on top:
+`ssid`/`nickname` are base64-decoded and `local_time` is rendered in ISO form,
+so responses are readable rather than faithful to the wire format.
 """
 
 from __future__ import annotations
@@ -17,11 +17,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import calendar
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from datetime import date, datetime, time
+from typing import Any
 
 from kasa import Credentials, Device, DeviceConfig, Discover, Module
 
@@ -32,73 +31,20 @@ logger = logging.getLogger(__name__)
 # How long to wait for the initial protocol probe of a single device.
 CONNECT_TIMEOUT_SECONDS = 30
 
+# The `interval` values `get_energy_data` accepts, in minutes.
+ENERGY_INTERVALS: dict[str, int] = {
+    "hourly": 60,
+    "daily": 1440,
+    "monthly": 43200,
+}
+
 
 class DeviceError(Exception):
     """A device could not be reached, or refused a command."""
 
 
 class ActionError(Exception):
-    """The caller asked for something this device cannot do (a 400, not a 500)."""
-
-
-# ---------------------------------------------------------------------------
-# Preset colours, ported from the tapo crate (hue, saturation, colour temp).
-# A non-zero colour temperature means the preset is a white, and the hue and
-# saturation are ignored.
-# ---------------------------------------------------------------------------
-
-COLOR_PRESETS: dict[str, tuple[int, int, int]] = {
-    "CoolWhite": (0, 100, 4000),
-    "Daylight": (0, 100, 5000),
-    "Ivory": (0, 100, 6000),
-    "WarmWhite": (0, 100, 3000),
-    "Incandescent": (0, 100, 2700),
-    "Candlelight": (0, 100, 2500),
-    "Snow": (0, 100, 6500),
-    "GhostWhite": (0, 100, 6500),
-    "AliceBlue": (208, 5, 0),
-    "LightGoldenrod": (54, 28, 0),
-    "LemonChiffon": (54, 19, 0),
-    "AntiqueWhite": (0, 100, 5500),
-    "Gold": (50, 100, 0),
-    "Peru": (29, 69, 0),
-    "Chocolate": (30, 100, 0),
-    "SandyBrown": (27, 60, 0),
-    "Coral": (16, 68, 0),
-    "Pumpkin": (24, 90, 0),
-    "Tomato": (9, 72, 0),
-    "Vermilion": (4, 77, 0),
-    "OrangeRed": (16, 100, 0),
-    "Pink": (349, 24, 0),
-    "Crimson": (348, 90, 0),
-    "DarkRed": (0, 100, 0),
-    "HotPink": (330, 58, 0),
-    "Smitten": (329, 67, 0),
-    "MediumPurple": (259, 48, 0),
-    "BlueViolet": (271, 80, 0),
-    "Indigo": (274, 100, 0),
-    "LightSkyBlue": (202, 46, 0),
-    "CornflowerBlue": (218, 57, 0),
-    "Ultramarine": (254, 100, 0),
-    "DeepSkyBlue": (195, 100, 0),
-    "Azure": (210, 100, 0),
-    "NavyBlue": (240, 100, 0),
-    "LightTurquoise": (180, 26, 0),
-    "Aquamarine": (159, 50, 0),
-    "Turquoise": (174, 71, 0),
-    "LightGreen": (120, 39, 0),
-    "Lime": (75, 100, 0),
-    "ForestGreen": (120, 75, 0),
-}
-
-# Lighting effect presets tapo-rest accepts. They are matched against the
-# effect names the light strip itself reports.
-LIGHTING_EFFECT_PRESETS = (
-    "Aurora", "BubblingCauldron", "CandyCane", "Christmas", "Flicker",
-    "GrandmasChristmasLights", "Hanukkah", "HauntedMansion", "Icicle",
-    "Lightning", "Ocean", "Rainbow", "Raindrop", "Spring", "Sunrise",
-    "Sunset", "Valentines",
-)  # fmt: skip
+    """The caller asked for something this device cannot do (a 400, not a 502)."""
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +64,7 @@ def _decode_base64_field(value: Any) -> Any:
 
 
 def _normalise_local_time(value: Any) -> Any:
-    """Devices report `2026-08-09 18:29:18`; the tapo crate renders it ISO."""
+    """Devices report `2026-08-09 18:29:18`; render it ISO."""
     if not isinstance(value, str):
         return value
     try:
@@ -145,69 +91,30 @@ def normalise_payload(payload: Any) -> Any:
     return result
 
 
-def _utc_iso(moment: datetime) -> str:
-    """Render as chrono renders a DateTime<Utc>: RFC 3339, whole seconds, Z."""
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _local_timestamp(day: date, at: time) -> int:
     return int(datetime.combine(day, at).astimezone().timestamp())
 
 
-def _add_months(moment: datetime, months: int) -> datetime:
-    """Calendar-month arithmetic, clamping the day like chrono's Months does."""
-    total = moment.month - 1 + months
-    year = moment.year + total // 12
-    month = total % 12 + 1
-    day = min(moment.day, calendar.monthrange(year, month)[1])
-    return moment.replace(year=year, month=month, day=day)
-
-
-def build_energy_data_request(
+def energy_data_request(
     interval_minutes: int, start_date: date, end_date: date | None = None
 ) -> dict:
-    """The request params the tapo crate builds for each EnergyDataInterval."""
-    if interval_minutes == 60:
+    """The request params `get_energy_data` expects, on local-day boundaries.
+
+    Hourly data covers a range of days, so it needs both ends. Daily and monthly
+    buckets are selected by a single timestamp: the device decides how far the
+    period reaches from the interval alone.
+    """
+    start = _local_timestamp(start_date, time(0, 0, 0))
+    if interval_minutes == ENERGY_INTERVALS["hourly"]:
         return {
-            "start_timestamp": _local_timestamp(start_date, time(0, 0, 0)),
+            "start_timestamp": start,
             "end_timestamp": _local_timestamp(end_date or start_date, time(23, 59, 59)),
-            "interval": 60,
+            "interval": interval_minutes,
         }
-    stamp = _local_timestamp(start_date, time(0, 0, 0))
     return {
-        "start_timestamp": stamp,
-        "end_timestamp": stamp,
+        "start_timestamp": start,
+        "end_timestamp": start,
         "interval": interval_minutes,
-    }
-
-
-def shape_energy_data(raw: dict) -> dict:
-    """Turn the device's `{data, start_timestamp, interval}` into tapo-rest's shape."""
-    interval = raw.get("interval")
-    start_timestamp = raw.get("start_timestamp")
-    if interval is None or start_timestamp is None:
-        raise DeviceError("Device returned energy data without an interval")
-
-    cursor = datetime.fromtimestamp(start_timestamp).astimezone()
-    start_date_time = _utc_iso(cursor)
-
-    entries = []
-    for energy in raw.get("data") or []:
-        entries.append({"start_date_time": _utc_iso(cursor), "energy": energy})
-        if interval == 60:
-            cursor = cursor + timedelta(hours=1)
-        elif interval == 1440:
-            cursor = cursor + timedelta(days=1)
-        elif interval == 43200:
-            cursor = _add_months(cursor.replace(tzinfo=None), 1).astimezone()
-        else:
-            raise DeviceError(f"Unsupported interval duration: {interval} minutes")
-
-    return {
-        "local_time": _normalise_local_time(raw.get("local_time")),
-        "start_date_time": start_date_time,
-        "entries": entries,
-        "interval_length": interval,
     }
 
 
@@ -219,9 +126,8 @@ def shape_energy_data(raw: dict) -> dict:
 class TapoDevice:
     """A configured device and its cached connection.
 
-    The connection is established on first use and then kept, exactly as
-    tapo-rest did. A failure to connect at startup is not fatal: the next
-    request tries again.
+    The connection is established on first use and then kept. A failure to
+    connect at startup is not fatal: the next request tries again.
     """
 
     def __init__(self, entry: DeviceEntry, credentials: Credentials) -> None:
@@ -289,11 +195,7 @@ class TapoDevice:
         await self.client()
 
     async def refresh_session(self) -> None:
-        """Drop the cached connection and hand-shake again.
-
-        python-kasa has no explicit session-refresh call; re-authenticating is
-        the equivalent of tapo-rest's `refresh_session`.
-        """
+        """Drop the cached connection and hand-shake again."""
         async with self._lock:
             await self._close()
             self._client = await self._connect()
@@ -314,10 +216,8 @@ class TapoDevice:
     async def raw(self, method: str, params: dict | None = None) -> dict:
         """Send one native request and return its (normalised) body.
 
-        Tapo devices expire their sessions after a while. Rather than failing
-        the request the way tapo-rest did -- it answered `Session timeout` until
-        someone called `/refresh-session` -- the connection is dropped and
-        re-established once, transparently.
+        Tapo devices expire their sessions after a while, so a failed request is
+        retried once on a fresh connection rather than surfacing to the caller.
         """
         try:
             response = await self._query(method, params)
@@ -353,6 +253,11 @@ class TapoDevice:
         return client
 
     async def module(self, module_name: str):
+        """A python-kasa module, or `ActionError` if this device lacks it.
+
+        This is what replaces a hand-maintained table of model capabilities: the
+        device itself reports which features it carries.
+        """
         client = await self.update()
         module = client.modules.get(module_name)
         if module is None:
@@ -364,112 +269,55 @@ class TapoDevice:
 
 
 # ---------------------------------------------------------------------------
-# Actions
+# Operations
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class ParamSpec:
-    name: str
-    kind: str  # u8 | u16 | date | color | effect
-    required: bool = True
+async def set_power(device: TapoDevice, on: bool) -> None:
+    await device.raw("set_device_info", {"device_on": on})
 
 
-@dataclass(frozen=True)
-class Action:
-    """One action, and the URI segment it is exposed under."""
-
-    name: str
-    handler: Callable[["TapoDevice", dict], Awaitable[Any]]
-    params: tuple[ParamSpec, ...] = ()
-
-    @property
-    def uri_segment(self) -> str:
-        return self.name.replace("_", "-")
-
-
-async def _act_on(device: TapoDevice, _params: dict) -> None:
-    await device.raw("set_device_info", {"device_on": True})
-
-
-async def _act_off(device: TapoDevice, _params: dict) -> None:
-    await device.raw("set_device_info", {"device_on": False})
-
-
-async def _act_set_brightness(device: TapoDevice, params: dict) -> None:
+async def set_brightness(device: TapoDevice, brightness: int) -> None:
     light = await device.module(Module.Light)
-    await light.set_brightness(params["level"])
+    await light.set_brightness(brightness)
 
 
-async def _act_set_color(device: TapoDevice, params: dict) -> None:
-    hue, saturation, color_temp = COLOR_PRESETS[params["color"]]
+async def set_color_temp(device: TapoDevice, kelvin: int) -> None:
     light = await device.module(Module.Light)
-    if color_temp:
-        await light.set_color_temp(color_temp)
-    else:
-        await light.set_hsv(hue, saturation)
+    await light.set_color_temp(kelvin)
 
 
-async def _act_set_hue_saturation(device: TapoDevice, params: dict) -> None:
+async def set_hue_saturation(device: TapoDevice, hue: int, saturation: int) -> None:
     light = await device.module(Module.Light)
-    await light.set_hsv(params["hue"], params["saturation"])
+    await light.set_hsv(hue, saturation)
 
 
-async def _act_set_color_temperature(device: TapoDevice, params: dict) -> None:
-    light = await device.module(Module.Light)
-    await light.set_color_temp(params["color_temperature"])
-
-
-async def _act_set_lighting_effect(device: TapoDevice, params: dict) -> None:
+async def set_light_effect(device: TapoDevice, effect: str) -> str:
+    """Select a lighting effect by name, matched against what the strip offers."""
     effects = await device.module(Module.LightEffect)
-    wanted = params["lighting_effect"]
     available = list(effects.effect_list or [])
-    match = next((name for name in available if name.lower() == wanted.lower()), None)
+    match = next((name for name in available if name.lower() == effect.lower()), None)
     if match is None:
-        # Tapo's preset names and the strip's own scene names do not always agree.
         raise ActionError(
-            f"Device '{device.name}' does not offer the '{wanted}' effect. "
+            f"Device '{device.name}' does not offer the '{effect}' effect. "
             f"Available: {', '.join(available) or 'none'}"
         )
     await effects.set_effect(match)
+    return match
 
 
-async def _act_get_device_info(device: TapoDevice, _params: dict) -> dict:
-    return await device.raw("get_device_info")
+async def energy_history(
+    device: TapoDevice,
+    interval_minutes: int,
+    start_date: date,
+    end_date: date | None = None,
+) -> dict:
+    """The device's own `get_energy_data` payload for one interval."""
+    request = energy_data_request(interval_minutes, start_date, end_date)
+    return await device.raw("get_energy_data", request)
 
 
-async def _act_get_device_usage(device: TapoDevice, _params: dict) -> dict:
-    return await device.raw("get_device_usage")
-
-
-async def _act_get_energy_usage(device: TapoDevice, _params: dict) -> dict:
-    return await device.raw("get_energy_usage")
-
-
-async def _act_get_current_power(device: TapoDevice, _params: dict) -> dict:
-    return await device.raw("get_current_power")
-
-
-async def _energy_data(device: TapoDevice, interval: int, params: dict) -> dict:
-    request = build_energy_data_request(
-        interval, params["start_date"], params.get("end_date")
-    )
-    return shape_energy_data(await device.raw("get_energy_data", request))
-
-
-async def _act_get_hourly_energy_data(device: TapoDevice, params: dict) -> dict:
-    return await _energy_data(device, 60, params)
-
-
-async def _act_get_daily_energy_data(device: TapoDevice, params: dict) -> dict:
-    return await _energy_data(device, 1440, params)
-
-
-async def _act_get_monthly_energy_data(device: TapoDevice, params: dict) -> dict:
-    return await _energy_data(device, 43200, params)
-
-
-async def _act_get_child_device_list(device: TapoDevice, _params: dict) -> list:
+async def child_devices(device: TapoDevice) -> list:
     """Every outlet of a power strip, paging through the device's list."""
     children: list[dict] = []
     start_index = 0
@@ -482,118 +330,6 @@ async def _act_get_child_device_list(device: TapoDevice, _params: dict) -> list:
             break
         start_index = len(children)
     return children
-
-
-_ON_OFF = (
-    Action("on", _act_on),
-    Action("off", _act_off),
-)
-_INFO = Action("get_device_info", _act_get_device_info)
-_USAGE = Action("get_device_usage", _act_get_device_usage)
-_BRIGHTNESS = Action(
-    "set_brightness", _act_set_brightness, (ParamSpec("level", "u8"),)
-)
-_COLOR_ACTIONS = (
-    Action("set_color", _act_set_color, (ParamSpec("color", "color"),)),
-    Action(
-        "set_hue_saturation",
-        _act_set_hue_saturation,
-        (ParamSpec("hue", "u16"), ParamSpec("saturation", "u8")),
-    ),
-    Action(
-        "set_color_temperature",
-        _act_set_color_temperature,
-        (ParamSpec("color_temperature", "u16"),),
-    ),
-)
-_ENERGY_ACTIONS = (
-    Action("get_energy_usage", _act_get_energy_usage),
-    Action(
-        "get_hourly_energy_data",
-        _act_get_hourly_energy_data,
-        (ParamSpec("start_date", "date"), ParamSpec("end_date", "date", required=False)),
-    ),
-    Action(
-        "get_daily_energy_data",
-        _act_get_daily_energy_data,
-        (ParamSpec("start_date", "date"),),
-    ),
-    Action(
-        "get_monthly_energy_data",
-        _act_get_monthly_energy_data,
-        (ParamSpec("start_date", "date"),),
-    ),
-    Action("get_current_power", _act_get_current_power),
-)
-
-
-@dataclass(frozen=True)
-class DeviceGroup:
-    """Models that share a handler type, and therefore an action set."""
-
-    models: tuple[str, ...]
-    description: str
-    actions: tuple[Action, ...]
-
-    def action(self, uri_segment: str) -> Action | None:
-        return next((a for a in self.actions if a.uri_segment == uri_segment), None)
-
-
-DEVICE_GROUPS: tuple[DeviceGroup, ...] = (
-    DeviceGroup(("L510", "L520", "L610"), "bulb", (*_ON_OFF, _BRIGHTNESS, _INFO, _USAGE)),
-    DeviceGroup(
-        ("L530", "L535", "L630"),
-        "bulb",
-        (*_ON_OFF, _BRIGHTNESS, *_COLOR_ACTIONS, _INFO, _USAGE),
-    ),
-    DeviceGroup(
-        ("L900",), "light strip", (*_ON_OFF, _BRIGHTNESS, *_COLOR_ACTIONS, _INFO, _USAGE)
-    ),
-    DeviceGroup(
-        ("L920", "L930"),
-        "light strip",
-        (
-            *_ON_OFF,
-            _BRIGHTNESS,
-            *_COLOR_ACTIONS,
-            Action(
-                "set_lighting_effect",
-                _act_set_lighting_effect,
-                (ParamSpec("lighting_effect", "effect"),),
-            ),
-            _INFO,
-            _USAGE,
-        ),
-    ),
-    DeviceGroup(("P100", "P105"), "plug", (*_ON_OFF, _INFO, _USAGE)),
-    DeviceGroup(
-        ("P110", "P110M", "P115"), "plug", (*_ON_OFF, _INFO, _USAGE, *_ENERGY_ACTIONS)
-    ),
-    DeviceGroup(
-        ("P300",),
-        "power strip",
-        (_INFO, Action("get_child_device_list", _act_get_child_device_list)),
-    ),
-    DeviceGroup(
-        ("P304", "P304M", "P316"),
-        "energy monitoring power strip",
-        (_INFO, Action("get_child_device_list", _act_get_child_device_list)),
-    ),
-)
-
-GROUP_BY_MODEL: dict[str, DeviceGroup] = {
-    model: group for group in DEVICE_GROUPS for model in group.models
-}
-
-
-def action_uris() -> list[str]:
-    """Every action route, in the order tapo-rest listed them on `/actions`."""
-    return [
-        f"/{model.lower()}/{action.uri_segment}"
-        for group in DEVICE_GROUPS
-        for model in group.models
-        for action in group.actions
-    ]
 
 
 # ---------------------------------------------------------------------------
