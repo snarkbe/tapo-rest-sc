@@ -26,7 +26,7 @@ My goal was to retrieve data usage for several Tapo smart plugs in 1 single resp
 
 - One endpoint returning the current power of every configured device, plus a computed total
 - Chained plugs: subtract one device's consumption from another's, so nothing is counted twice
-- A full REST surface for controlling and querying individual devices, compatible with [tapo-rest](https://github.com/ClementNerma/tapo-rest)'s routes
+- A REST surface for controlling and querying individual devices, documented automatically on `/docs`
 - Speaks to devices **directly over your LAN** with [python-kasa](https://github.com/python-kasa/python-kasa) — no bundled binary, no sidecar process, no cloud round-trip
 - Expired device sessions are re-established transparently instead of failing the request
 - Dockerized, and architecture-independent
@@ -105,10 +105,9 @@ calls — is **unauthenticated**, exactly as it has always been. Your widget nee
 no key, no header and no change.
 
 An API key only guards the routes that can *change* a device or reveal your
-setup: `/actions/…`, `/devices`, `/refresh-session` and `/reload-config`. Add
-one only if you want to switch devices on and off over HTTP, from a script or
-Home Assistant. Until you do, those routes answer `403` and everything else
-works normally.
+setup: `/devices/…` and `/reload-config`. Add one only if you want to switch
+devices on and off over HTTP, from a script or Home Assistant. Until you do,
+those routes answer `403` and everything else works normally.
 
 To add one, generate a key and put it in `app/config.json`:
 
@@ -156,7 +155,7 @@ Two steps, both on your mounted `app/` directory:
    place would shadow the renamed one. The service detects it and says so
    instead of failing obscurely.
 
-You do not need to add an API key unless you want the `/actions` routes.
+You do not need to add an API key unless you want the `/devices/…` routes.
 
 ## API Usage
 
@@ -184,37 +183,84 @@ This is what the Homepage widget at the top of this README calls. It takes no
 
 - **GET `/`** — redirects to `/get_all_device_power`.
 
-### Device actions — API key required
+### Device routes — API key required
 
-All action routes take `?device=<name>`, use `GET`, and expect an `Authorization: Bearer <api key>` header:
+The device is a path segment, and every route expects an
+`Authorization: Bearer <api key>` header:
 
 ```shell
 curl -H 'Authorization: Bearer <your API key>' \
-     'http://localhost:5000/actions/p115/get-current-power?device=Washer'
+     'http://localhost:5000/devices/Washer/power'
 ```
 
-- **GET `/actions`** — the full list of available routes. The only action route that needs no key.
-- **GET `/devices`** — the configured devices.
-- **GET `/refresh-session?device=<name>`** — force a reconnection. Rarely needed now, since expired sessions are re-established automatically.
-- **POST `/reload-config`** — re-read `config.json` without restarting.
+**Browse and try them on `/docs`** — the interactive documentation is generated
+from the code, so it is always current. `/openapi.json` has the raw schema.
 
-Available actions, by device type:
+| Method | Route | What it does |
+| --- | --- | --- |
+| `GET` | `/devices` | The configured devices. |
+| `GET` | `/devices/{name}` | Device info, as the device reports it. |
+| `GET` | `/devices/{name}/usage` | Runtime and power-on statistics. |
+| `POST` | `/devices/{name}/on` | Switch on. |
+| `POST` | `/devices/{name}/off` | Switch off. |
+| `POST` | `/devices/{name}/light` | Set `brightness` (1–100), `hue` (0–360) with `saturation` (0–100), `color_temp` (Kelvin) and/or `effect`. |
+| `GET` | `/devices/{name}/power` | Instantaneous watts. |
+| `GET` | `/devices/{name}/energy` | Cumulative energy counters. |
+| `GET` | `/devices/{name}/energy/history` | `interval=hourly\|daily\|monthly` (default `daily`), `start_date=YYYY-MM-DD`, optional `end_date` for `hourly`. |
+| `GET` | `/devices/{name}/children` | The outlets of a power strip. |
+| `POST` | `/reload-config` | Re-read `config.json` without restarting. |
 
-| Device type | Actions |
-| --- | --- |
-| `L510` `L520` `L610` | `on` `off` `set-brightness` `get-device-info` `get-device-usage` |
-| `L530` `L535` `L630` `L900` | the above, plus `set-color` `set-hue-saturation` `set-color-temperature` |
-| `L920` `L930` | the above, plus `set-lighting-effect` |
-| `P100` `P105` | `on` `off` `get-device-info` `get-device-usage` |
-| `P110` `P110M` `P115` | the above, plus `get-energy-usage` `get-current-power` `get-hourly-energy-data` `get-daily-energy-data` `get-monthly-energy-data` |
-| `P300` `P304` `P304M` `P316` | `get-device-info` `get-child-device-list` |
+A device only accepts what it physically supports — asking a plug to change
+colour answers `400 Device 'Washer' (P115) does not support the 'Light' feature`.
+Nothing is hard-coded per model: python-kasa asks the device.
 
-Dates in `get-*-energy-data` are `YYYY-MM-DD`. `get-hourly-energy-data` also accepts an optional `end_date`.
+```shell
+# Dim a bulb to 40% and turn it deep blue
+curl -X POST -H 'Authorization: Bearer <key>' \
+     'http://localhost:5000/devices/Bulb/light?brightness=40&hue=240&saturation=100'
 
-Errors come back as plain text with the relevant status code: `400` for a bad or missing parameter, `403` for a bad key, `404` for an unknown device, `500` when the device itself fails.
+# Yesterday's hourly energy, local day boundaries (set TZ on the container)
+curl -H 'Authorization: Bearer <key>' \
+     'http://localhost:5000/devices/Washer/energy/history?interval=hourly&start_date=2026-08-09'
+```
+
+Errors are JSON `{"detail": …}`: `401` without a usable `Authorization` header,
+`403` for a bad key, `404` for an unknown device, `400` when the device cannot do
+what was asked, `422` for a malformed parameter, `502` when the device itself
+fails or is unreachable.
 
 > Only the plug types are exercised against real hardware here. The bulb, light
 > strip and power strip routes are implemented but untested — reports welcome.
+
+### Moving off the old `/actions` routes
+
+Earlier versions reproduced the routes of
+[tapo-rest](https://github.com/ClementNerma/tapo-rest), which this project once
+bundled as a binary. They have been removed and now answer `404`.
+`/get_all_device_power` is **unaffected** — the Homepage widget needs no change.
+
+| Old | New |
+| --- | --- |
+| `GET /actions/<model>/on?device=X` | `POST /devices/X/on` |
+| `GET /actions/<model>/off?device=X` | `POST /devices/X/off` |
+| `GET /actions/<model>/get-device-info?device=X` | `GET /devices/X` |
+| `GET /actions/<model>/get-device-usage?device=X` | `GET /devices/X/usage` |
+| `GET /actions/<model>/get-current-power?device=X` | `GET /devices/X/power` |
+| `GET /actions/<model>/get-energy-usage?device=X` | `GET /devices/X/energy` |
+| `GET /actions/<model>/get-{hourly,daily,monthly}-energy-data?device=X&start_date=D` | `GET /devices/X/energy/history?interval={hourly,daily,monthly}&start_date=D` |
+| `GET /actions/<model>/set-brightness?device=X&level=N` | `POST /devices/X/light?brightness=N` — now 1–100, not 0–255 |
+| `GET /actions/<model>/set-hue-saturation?device=X&hue=H&saturation=S` | `POST /devices/X/light?hue=H&saturation=S` |
+| `GET /actions/<model>/set-color-temperature?device=X&color_temperature=K` | `POST /devices/X/light?color_temp=K` |
+| `GET /actions/<model>/set-color?device=X&color=HotPink` | `POST /devices/X/light?hue=330&saturation=58` — named presets are gone |
+| `GET /actions/<model>/set-lighting-effect?device=X&lighting_effect=E` | `POST /devices/X/light?effect=E` |
+| `GET /actions/<model>/get-child-device-list?device=X` | `GET /devices/X/children` |
+| `GET /actions` | `GET /openapi.json`, or `/docs` |
+| `GET /refresh-session?device=X` | *removed* — expired sessions are re-established on the next request |
+
+Two response shapes changed: `energy/history` returns the device's own
+`{data, start_timestamp, interval, local_time}` instead of the reshaped
+`{entries, start_date_time, interval_length}`, and `on`/`off` answer
+`{"name": …, "on": …}` instead of an empty body.
 
 ## Project Structure
 
@@ -225,9 +271,9 @@ Errors come back as plain text with the relevant status code: `400` for a bad or
 │   └── config.json         # Your real configuration (gitignored, not in the repo)
 ├── taposc.py               # FastAPI application entrypoint
 ├── tapo_config.py          # Configuration loading and validation
-├── tapo_devices.py         # python-kasa device layer, action table
+├── tapo_devices.py         # python-kasa device layer and operations
 ├── tapo_power.py           # /get_all_device_power
-├── tapo_rest_api.py        # /actions, /devices, /refresh-session, /reload-config
+├── tapo_api.py             # /devices/... and /reload-config
 ├── tapo_state.py           # Shared config + device registry
 ├── tests/                  # Test suite
 ├── start.sh                # Entrypoint script
@@ -248,7 +294,7 @@ pytest
 
 ## Credits & Inspiration
 
-- [tapo-rest](https://github.com/ClementNerma/tapo-rest) by Clément Nerma, whose REST API this project's `/actions` routes reproduce, and which earlier versions of this project bundled as a binary
+- [tapo-rest](https://github.com/ClementNerma/tapo-rest) by Clément Nerma, which earlier versions of this project bundled as a binary and whose REST API they reproduced
 - [python-kasa](https://github.com/python-kasa/python-kasa), which now does the talking to the devices
 
 This project is not affiliated with TP-Link or Tapo.
