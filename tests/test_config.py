@@ -145,6 +145,58 @@ def test_environment_overrides_credentials(tmp_path, monkeypatch):
     assert config.password == "envsecret"
 
 
+def test_shadowed_credentials_are_announced(tmp_path, monkeypatch, caplog):
+    """Silently preferring the environment makes file edits look like no-ops."""
+    monkeypatch.setenv("TAPO_EMAIL", "env@example.com")
+    monkeypatch.setenv("TAPO_PASSWORD", "envsecret")
+
+    with caplog.at_level("WARNING"):
+        load_config(write(tmp_path, {"tapo_credentials": CREDENTIALS, "devices": [DEVICE]}))
+
+    warning = "\n".join(caplog.messages)
+    assert "TAPO_EMAIL and TAPO_PASSWORD" in warning
+    assert "overriding 'tapo_credentials'" in warning
+    # Never log the secret itself.
+    assert "envsecret" not in warning
+    assert CREDENTIALS["password"] not in warning
+
+
+def test_only_the_variable_that_is_set_is_reported(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("TAPO_PASSWORD", "envsecret")
+    monkeypatch.delenv("TAPO_EMAIL", raising=False)
+
+    with caplog.at_level("WARNING"):
+        config = load_config(
+            write(tmp_path, {"tapo_credentials": CREDENTIALS, "devices": [DEVICE]})
+        )
+
+    warning = "\n".join(caplog.messages)
+    assert "TAPO_PASSWORD" in warning
+    assert "TAPO_EMAIL" not in warning
+    assert config.email == CREDENTIALS["email"]
+
+
+def test_no_warning_when_the_file_is_the_only_source(tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("TAPO_EMAIL", raising=False)
+    monkeypatch.delenv("TAPO_PASSWORD", raising=False)
+
+    with caplog.at_level("WARNING"):
+        load_config(write(tmp_path, {"tapo_credentials": CREDENTIALS, "devices": [DEVICE]}))
+
+    assert "overriding" not in "\n".join(caplog.messages)
+
+
+def test_no_warning_when_the_environment_is_the_only_source(tmp_path, monkeypatch, caplog):
+    """Nothing is being shadowed, so this is a normal setup, not a surprise."""
+    monkeypatch.setenv("TAPO_EMAIL", "env@example.com")
+    monkeypatch.setenv("TAPO_PASSWORD", "envsecret")
+
+    with caplog.at_level("WARNING"):
+        load_config(write(tmp_path, {"devices": [DEVICE]}))
+
+    assert "overriding" not in "\n".join(caplog.messages)
+
+
 def test_api_keys_can_come_from_the_environment(tmp_path, monkeypatch):
     key = "f" * 40
     monkeypatch.setenv("TAPO_API_KEYS", f" {key} ,")

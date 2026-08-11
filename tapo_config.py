@@ -149,14 +149,38 @@ def _reject_legacy_config(raw: dict, path: Path) -> None:
         )
 
 
-def _parse_credentials(raw: dict) -> tuple[str, str]:
+def _parse_credentials(raw: dict, path: Path) -> tuple[str, str]:
     """Credentials from the file, with TAPO_EMAIL / TAPO_PASSWORD taking precedence."""
     credentials = raw.get("tapo_credentials") or {}
     if not isinstance(credentials, dict):
         raise ConfigError("'tapo_credentials' must be an object")
 
-    email = os.environ.get("TAPO_EMAIL") or credentials.get("email")
-    password = os.environ.get("TAPO_PASSWORD") or credentials.get("password")
+    env_email = os.environ.get("TAPO_EMAIL")
+    env_password = os.environ.get("TAPO_PASSWORD")
+
+    # Say so loudly when both sources are populated. Silently preferring the
+    # environment makes a later credential change in the file look like it did
+    # nothing at all.
+    shadowed = [
+        name
+        for name, from_env, from_file in (
+            ("TAPO_EMAIL", env_email, credentials.get("email")),
+            ("TAPO_PASSWORD", env_password, credentials.get("password")),
+        )
+        if from_env and from_file
+    ]
+    if shadowed:
+        logger.warning(
+            "%s set in the environment, overriding 'tapo_credentials' in %s. "
+            "Editing that file alone will not change how this service "
+            "authenticates -- change the environment variable, or unset it to "
+            "let the file win.",
+            " and ".join(shadowed),
+            path,
+        )
+
+    email = env_email or credentials.get("email")
+    password = env_password or credentials.get("password")
 
     if not email or not password:
         raise ConfigError(
@@ -280,7 +304,7 @@ def load_config(path: Path | None = None) -> Config:
 
     _reject_legacy_config(raw, resolved)
 
-    email, password = _parse_credentials(raw)
+    email, password = _parse_credentials(raw, resolved)
     api_keys = _parse_api_keys(raw)
     devices, items = _parse_devices(raw)
 
