@@ -1,8 +1,8 @@
 """Session expiry must not surface to callers.
 
-The tapo-rest deployment this replaces answered `Session timeout` for every
-device until someone called /refresh-session by hand. A dropped session should
-instead be re-established transparently on the next request.
+The deployment this replaces answered `Session timeout` for every device until
+someone forced a reconnection by hand. A dropped session is instead
+re-established transparently on the next request.
 """
 
 from __future__ import annotations

@@ -29,7 +29,7 @@ def test_sample_config_loads_without_error():
 
 
 def test_sample_config_needs_no_api_key_to_start():
-    """API keys are optional: only the /actions routes require one."""
+    """API keys are optional: only the /devices routes require one."""
     config = load_config(SAMPLE)
 
     assert config.api_keys == ()

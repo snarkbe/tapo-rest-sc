@@ -1,8 +1,8 @@
 """Configuration loading for taposc.
 
 A single JSON file holds everything: the Tapo account credentials, the server's
-API keys and the device list. It is a superset of the config the `tapo-rest`
-binary used to read, so an existing `devices.json` loads unchanged.
+API keys and the device list. It is a superset of the format earlier versions
+of this project read, so an existing `devices.json` loads unchanged.
 
     {
         "tapo_credentials": { "email": "...", "password": "..." },
@@ -20,12 +20,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Device type names accepted in `device_type`, matching tapo-rest's TapoDeviceType.
+# Device types this project was written against. Nothing dispatches on them --
+# they only label log and error messages -- so an unfamiliar one is a warning,
+# not a rejection, and a newer model needs no code change.
 KNOWN_DEVICE_TYPES = (
     "L510", "L520", "L530", "L535", "L610", "L630",
     "L900", "L920", "L930",
@@ -34,6 +38,22 @@ KNOWN_DEVICE_TYPES = (
 )  # fmt: skip
 
 MIN_API_KEY_LENGTH = 32
+
+_NON_SLUG = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(name: str) -> str:
+    """A URL-safe stand-in for a device name.
+
+    Device names are descriptive -- "UPS: NAS / Router / Fiber" -- and a `/` in
+    one cannot survive a URL path, since percent-encoding is undone before
+    routing. The slug ("ups-nas-router-fiber") gives such a device an address.
+    Returns an empty string for a name with nothing ASCII in it.
+    """
+    ascii_only = (
+        unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    )
+    return _NON_SLUG.sub("-", ascii_only.lower()).strip("-")
 
 
 class ConfigError(Exception):
@@ -54,10 +74,16 @@ class DeviceEntry:
     # taposc-only: name of another device whose power is subtracted from this one.
     substract: str | None = None
 
+    @property
+    def slug(self) -> str:
+        """The URL-safe identifier this device also answers to."""
+        return slugify(self.name)
+
     def conn_infos(self) -> dict:
-        """The shape `/devices` returns, matching tapo-rest's TapoConnectionInfos."""
+        """The shape `/devices` returns."""
         return {
             "name": self.name,
+            "slug": self.slug,
             "device_type": self.device_type,
             "ip_addr": self.ip_addr,
         }
@@ -194,9 +220,8 @@ def _parse_credentials(raw: dict, path: Path) -> tuple[str, str]:
 def _parse_api_keys(raw: dict) -> tuple[ApiKey, ...]:
     """API keys from `server.api_keys`, or from the TAPO_API_KEYS env var.
 
-    Both shapes of the server block are accepted: the flat `server_password` of
-    tapo-rest v0.4.3 and the `server: { password, api_keys }` of v0.5.0. Neither
-    password is used for anything -- they are parsed and ignored.
+    Older configurations carried a `server_password`, flat or inside `server`.
+    It is not read by anything: only `server.api_keys` grants access now.
     """
     from_env = os.environ.get("TAPO_API_KEYS", "")
     entries: list[ApiKey] = [
@@ -267,14 +292,40 @@ def _parse_devices(
 
         normalised = str(device_type).upper()
         if normalised not in KNOWN_DEVICE_TYPES:
-            raise ConfigError(
-                f"Unknown device_type '{device_type}' for device '{name}'. "
-                f"Known types: {', '.join(KNOWN_DEVICE_TYPES)}"
+            # Not fatal: device_type no longer selects any behaviour, it only
+            # labels log and error messages. python-kasa negotiates the protocol
+            # with the device itself, so a model released after this list was
+            # written works without a code change.
+            logger.warning(
+                "Device '%s' has an unfamiliar device_type '%s'. Continuing: "
+                "the protocol is negotiated with the device. Known types: %s",
+                name,
+                device_type,
+                ", ".join(KNOWN_DEVICE_TYPES),
             )
 
         if name in seen:
             raise ConfigError(f"Duplicate device name: '{name}'")
         seen.add(name)
+
+        if "/" in name:
+            # A '/' cannot survive a path segment: percent-encoding is undone
+            # before routing. Such a device is addressed by its slug instead.
+            slug = slugify(name)
+            if slug:
+                logger.info(
+                    "Device '%s' contains a '/', so address it as '%s' on the "
+                    "/devices routes.",
+                    name,
+                    slug,
+                )
+            else:
+                logger.warning(
+                    "Device '%s' contains a '/' and has no ASCII characters to "
+                    "build a slug from, so it cannot be reached on the /devices "
+                    "routes. It still appears in /get_all_device_power.",
+                    name,
+                )
 
         ip_addr = entry.get("ip_addr")
         if not ip_addr:

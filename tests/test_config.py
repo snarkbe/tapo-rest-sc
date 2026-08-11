@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tapo_config import ConfigError, load_config  # noqa: E402
+from tapo_config import ConfigError, load_config, slugify  # noqa: E402
 
 CREDENTIALS = {"email": "user@example.com", "password": "secret"}
 DEVICE = {"name": "Washer", "device_type": "P115", "ip_addr": "192.168.1.11"}
@@ -107,14 +108,18 @@ def test_valid_api_key_is_accepted(tmp_path):
     assert not config.is_valid_api_key("z" * 32)
 
 
-def test_unknown_device_type_is_rejected(tmp_path):
+def test_unknown_device_type_warns_and_loads(tmp_path, caplog):
+    """Nothing dispatches on device_type, so a newer model must still work."""
     payload = {
         "tapo_credentials": CREDENTIALS,
-        "devices": [{**DEVICE, "device_type": "P999"}],
+        "devices": [{**DEVICE, "device_type": "P117"}],
     }
 
-    with pytest.raises(ConfigError, match="Unknown device_type"):
-        load_config(write(tmp_path, payload))
+    with caplog.at_level(logging.WARNING):
+        config = load_config(write(tmp_path, payload))
+
+    assert config.devices[0].device_type == "P117"
+    assert any("unfamiliar device_type" in r.getMessage() for r in caplog.records)
 
 
 def test_device_type_is_case_insensitive(tmp_path):
@@ -215,3 +220,39 @@ def test_a_leading_comment_line_is_tolerated(tmp_path):
 def test_missing_file_names_the_path(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_config(tmp_path / "nope.json")
+
+
+def test_a_slash_in_a_device_name_reports_the_slug_to_use(tmp_path, caplog):
+    """A '/' cannot survive a path segment, so the log names the alternative."""
+    path = write(
+        tmp_path,
+        {
+            "tapo_credentials": CREDENTIALS,
+            "devices": [
+                {
+                    "name": "UPS: NAS / Router / Fiber",
+                    "device_type": "P110",
+                    "ip_addr": "192.168.0.10",
+                }
+            ],
+        },
+    )
+
+    with caplog.at_level(logging.INFO):
+        config = load_config(path)
+
+    device = config.devices[0]
+    assert device.name == "UPS: NAS / Router / Fiber"
+    assert device.slug == "ups-nas-router-fiber"
+    assert any("ups-nas-router-fiber" in record.getMessage() for record in caplog.records)
+
+
+def test_slugs_are_ascii_lowercase_and_collapse_punctuation():
+    assert slugify("UPS: NAS / Router / Fiber") == "ups-nas-router-fiber"
+    assert slugify("TV / TV box / Soundbar") == "tv-tv-box-soundbar"
+    assert slugify("Office: PC / Laptop / Printer") == "office-pc-laptop-printer"
+    assert slugify("Washer") == "washer"
+    assert slugify("Salon Éclairage") == "salon-eclairage"
+    assert slugify("  --Cave--  ") == "cave"
+    # Nothing ASCII to work with: no slug, and the caller warns.
+    assert slugify("日本") == ""

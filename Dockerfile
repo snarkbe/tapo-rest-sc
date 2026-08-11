@@ -8,7 +8,7 @@ COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY start.sh taposc.py tapo_config.py tapo_devices.py tapo_power.py \
-     tapo_rest_api.py tapo_state.py ./
+     tapo_api.py tapo_state.py ./
 RUN chmod +x ./start.sh
 
 EXPOSE 5000

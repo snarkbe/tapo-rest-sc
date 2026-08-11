@@ -1,13 +1,12 @@
 """Tapo Device Power REST API.
 
 A single pure-Python service that talks to Tapo devices directly over the LAN
-via python-kasa. It replaces the previously bundled `tapo-rest` binary, and
-exposes both:
+via python-kasa. It exposes:
 
   * `/get_all_device_power` -- the aggregated reading a Homepage dashboard
-    widget consumes, unchanged.
-  * a tapo-rest compatible `/actions` surface for controlling and querying
-    individual devices.
+    widget consumes, unauthenticated and unchanged since the Flask days.
+  * `/devices/...` -- a REST surface for controlling and querying individual
+    devices, documented on `/docs`.
 
 Run it with `uvicorn taposc:app --host 0.0.0.0 --port 5000`.
 """
@@ -21,10 +20,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import tapo_api
 import tapo_power
-import tapo_rest_api
 from tapo_devices import ActionError, DeviceError
-from tapo_rest_api import ApiError
 from tapo_state import ServiceState
 
 logging.basicConfig(
@@ -52,7 +50,8 @@ app = FastAPI(
 )
 app.state.service = ServiceState()
 
-# tapo-rest allowed any origin; keep that so existing dashboards keep working.
+# Dashboard widgets fetch from the browser, from whatever origin the dashboard
+# is served on, so any origin is allowed.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,12 +59,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.add_exception_handler(ApiError, tapo_rest_api.api_error_handler)
-app.add_exception_handler(DeviceError, tapo_rest_api.device_error_handler)
-app.add_exception_handler(ActionError, tapo_rest_api.action_error_handler)
+app.add_exception_handler(DeviceError, tapo_api.device_error_handler)
+app.add_exception_handler(ActionError, tapo_api.action_error_handler)
 
 app.include_router(tapo_power.router)
-app.include_router(tapo_rest_api.router)
+app.include_router(tapo_api.router)
 
 
 if __name__ == "__main__":
