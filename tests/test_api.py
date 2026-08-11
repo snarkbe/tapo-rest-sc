@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from conftest import VALID_API_KEY, FakeLight, FakeLightEffect
 
 PLUGS = [
@@ -182,9 +184,22 @@ def test_device_info_is_served_from_the_device(make_client):
     assert response.json() == {"model": "P115"}
 
 
+def _energy_payload(interval, start, data):
+    """What a plug answers to get_energy_data: a bare array plus its origin."""
+    return {
+        "get_energy_data": {
+            "local_time": "2026-08-09 18:30:50",
+            "data": data,
+            "start_timestamp": int(datetime(*start).astimezone().timestamp()),
+            "interval": interval,
+        }
+    }
+
+
 def test_energy_history_sends_the_interval_the_device_expects(make_client):
     client, service = make_client(
-        PLUGS, {"Washer": {"payloads": {"get_energy_data": {"data": [1, 2]}}}}
+        PLUGS,
+        {"Washer": {"payloads": _energy_payload(43200, (2026, 1, 1), [1, 2, 3])}},
     )
     response = client.get(
         "/devices/Washer/energy/history",
@@ -193,15 +208,35 @@ def test_energy_history_sends_the_interval_the_device_expects(make_client):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"data": [1, 2]}
     method, params = service.registry.get("Washer").calls[-1]
     assert method == "get_energy_data"
     assert params["interval"] == 43200
 
 
+def test_energy_history_labels_every_bucket_with_its_start(make_client):
+    """The bare array is dated here, not by the caller."""
+    client, _ = make_client(
+        PLUGS, {"Washer": {"payloads": _energy_payload(60, (2026, 8, 9), [72, 87, 92])}}
+    )
+    body = client.get(
+        "/devices/Washer/energy/history",
+        params={"interval": "hourly", "start_date": "2026-08-09"},
+        headers=AUTH,
+    ).json()
+
+    assert body["interval_length"] == 60
+    assert [entry["energy"] for entry in body["entries"]] == [72, 87, 92]
+    stamps = [
+        datetime.strptime(entry["start_date_time"], "%Y-%m-%dT%H:%M:%SZ")
+        for entry in body["entries"]
+    ]
+    assert (stamps[1] - stamps[0]).total_seconds() == 3600
+    assert body["start_date_time"] == body["entries"][0]["start_date_time"]
+
+
 def test_energy_history_defaults_to_daily(make_client):
     client, service = make_client(
-        PLUGS, {"Washer": {"payloads": {"get_energy_data": {"data": []}}}}
+        PLUGS, {"Washer": {"payloads": _energy_payload(1440, (2026, 8, 9), [])}}
     )
     response = client.get(
         "/devices/Washer/energy/history",
@@ -210,7 +245,21 @@ def test_energy_history_defaults_to_daily(make_client):
     )
 
     assert response.status_code == 200
+    assert response.json()["entries"] == []
     assert service.registry.get("Washer").calls[-1][1]["interval"] == 1440
+
+
+def test_energy_data_without_an_interval_surfaces_as_a_502(make_client):
+    client, _ = make_client(
+        PLUGS, {"Washer": {"payloads": {"get_energy_data": {"data": [1]}}}}
+    )
+    response = client.get(
+        "/devices/Washer/energy/history",
+        params={"start_date": "2026-08-09"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 502
 
 
 def test_children_pages_through_the_device_list(make_client):

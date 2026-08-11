@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tapo_devices import (  # noqa: E402
     ENERGY_INTERVALS,
+    DeviceError,
+    _add_months,
     energy_data_request,
     normalise_payload,
+    shape_energy_data,
 )
 
 
@@ -68,3 +73,87 @@ def test_daily_and_monthly_requests_use_one_timestamp():
 
 def test_the_three_intervals_are_the_ones_the_devices_accept():
     assert ENERGY_INTERVALS == {"hourly": 60, "daily": 1440, "monthly": 43200}
+
+
+def test_hourly_entries_advance_by_one_hour():
+    start = _local_epoch(2026, 8, 9, 0, 0, 0)
+    shaped = shape_energy_data(
+        {
+            "local_time": "2026-08-09 18:30:50",
+            "data": [72, 87, 92],
+            "start_timestamp": start,
+            "interval": 60,
+        }
+    )
+
+    assert shaped["interval_length"] == 60
+    assert shaped["local_time"] == "2026-08-09T18:30:50"
+    assert [entry["energy"] for entry in shaped["entries"]] == [72, 87, 92]
+
+    stamps = [entry["start_date_time"] for entry in shaped["entries"]]
+    parsed = [datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ") for s in stamps]
+    assert (parsed[1] - parsed[0]).total_seconds() == 3600
+    assert (parsed[2] - parsed[1]).total_seconds() == 3600
+    assert shaped["start_date_time"] == stamps[0]
+
+
+def test_start_date_time_is_utc_with_a_z_suffix():
+    start = int(datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+    shaped = shape_energy_data(
+        {
+            "local_time": "2026-08-09 14:00:00",
+            "data": [1],
+            "start_timestamp": start,
+            "interval": 60,
+        }
+    )
+    assert shaped["start_date_time"] == "2026-08-09T12:00:00Z"
+
+
+def test_daily_entries_advance_by_one_day():
+    shaped = shape_energy_data(
+        {"data": [1, 2], "start_timestamp": _local_epoch(2026, 8, 9), "interval": 1440}
+    )
+    stamps = [
+        datetime.strptime(e["start_date_time"], "%Y-%m-%dT%H:%M:%SZ")
+        for e in shaped["entries"]
+    ]
+    assert (stamps[1] - stamps[0]).days == 1
+
+
+def test_monthly_entries_advance_by_calendar_months():
+    shaped = shape_energy_data(
+        {
+            "local_time": "2026-08-09 18:30:50",
+            "data": [1, 2, 3],
+            "start_timestamp": _local_epoch(2026, 1, 1),
+            "interval": 43200,
+        }
+    )
+    # Stamps are emitted in UTC; convert back to local to read the calendar month.
+    months = [
+        datetime.strptime(entry["start_date_time"], "%Y-%m-%dT%H:%M:%SZ")
+        .replace(tzinfo=timezone.utc)
+        .astimezone()
+        for entry in shaped["entries"]
+    ]
+    # January, February, March -- not fixed 30-day steps.
+    assert [m.month for m in months] == [1, 2, 3]
+    assert all(m.day == 1 for m in months)
+
+
+def test_add_months_clamps_the_day():
+    assert _add_months(datetime(2026, 1, 31), 1) == datetime(2026, 2, 28)
+    assert _add_months(datetime(2026, 12, 15), 1) == datetime(2027, 1, 15)
+
+
+def test_energy_data_without_an_interval_is_a_device_error():
+    with pytest.raises(DeviceError):
+        shape_energy_data({"data": [1, 2]})
+
+
+def test_an_unsupported_interval_is_a_device_error():
+    with pytest.raises(DeviceError, match="Unsupported interval"):
+        shape_energy_data(
+            {"data": [1], "start_timestamp": _local_epoch(2026, 8, 9), "interval": 7}
+        )

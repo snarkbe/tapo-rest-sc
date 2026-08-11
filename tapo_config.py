@@ -27,8 +27,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Device type names accepted in `device_type`. Only used to catch typos in the
-# configuration: what a device can actually do is decided by the device itself.
+# Device types this project was written against. Nothing dispatches on them --
+# they only label log and error messages -- so an unfamiliar one is a warning,
+# not a rejection, and a newer model needs no code change.
 KNOWN_DEVICE_TYPES = (
     "L510", "L520", "L530", "L535", "L610", "L630",
     "L900", "L920", "L930",
@@ -267,9 +268,16 @@ def _parse_devices(
 
         normalised = str(device_type).upper()
         if normalised not in KNOWN_DEVICE_TYPES:
-            raise ConfigError(
-                f"Unknown device_type '{device_type}' for device '{name}'. "
-                f"Known types: {', '.join(KNOWN_DEVICE_TYPES)}"
+            # Not fatal: device_type no longer selects any behaviour, it only
+            # labels log and error messages. python-kasa negotiates the protocol
+            # with the device itself, so a model released after this list was
+            # written works without a code change.
+            logger.warning(
+                "Device '%s' has an unfamiliar device_type '%s'. Continuing: "
+                "the protocol is negotiated with the device. Known types: %s",
+                name,
+                device_type,
+                ", ".join(KNOWN_DEVICE_TYPES),
             )
 
         if name in seen:

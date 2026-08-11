@@ -7,9 +7,10 @@ There is no table of which model supports which action: python-kasa already
 knows. `TapoDevice.module()` raises `ActionError` when a device does not carry
 the feature being asked for, which the API turns into a 400.
 
-Payloads are the device's own JSON. One normalisation is applied on top:
-`ssid`/`nickname` are base64-decoded and `local_time` is rendered in ISO form,
-so responses are readable rather than faithful to the wire format.
+Payloads are the device's own JSON, with two transforms on top so responses are
+usable rather than faithful to the wire format: `ssid`/`nickname` are
+base64-decoded and `local_time` is rendered in ISO form, and historic energy
+data has each bucket paired with the moment it starts.
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import calendar
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from kasa import Credentials, Device, DeviceConfig, Discover, Module
@@ -93,6 +95,56 @@ def normalise_payload(payload: Any) -> Any:
 
 def _local_timestamp(day: date, at: time) -> int:
     return int(datetime.combine(day, at).astimezone().timestamp())
+
+
+def _utc_iso(moment: datetime) -> str:
+    """RFC 3339, whole seconds, Z."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _add_months(moment: datetime, months: int) -> datetime:
+    """Calendar-month arithmetic, clamping the day to the month's length."""
+    total = moment.month - 1 + months
+    year = moment.year + total // 12
+    month = total % 12 + 1
+    day = min(moment.day, calendar.monthrange(year, month)[1])
+    return moment.replace(year=year, month=month, day=day)
+
+
+def shape_energy_data(raw: dict) -> dict:
+    """Label each energy bucket with the moment it starts.
+
+    Devices answer `{data: [72, 87, 92], start_timestamp, interval}` -- a bare
+    array whose buckets the caller would otherwise have to date itself, calendar
+    arithmetic included for monthly data. This pairs every reading with its own
+    start time so the response can be consumed directly.
+    """
+    interval = raw.get("interval")
+    start_timestamp = raw.get("start_timestamp")
+    if interval is None or start_timestamp is None:
+        raise DeviceError("Device returned energy data without an interval")
+
+    cursor = datetime.fromtimestamp(start_timestamp).astimezone()
+    start_date_time = _utc_iso(cursor)
+
+    entries = []
+    for energy in raw.get("data") or []:
+        entries.append({"start_date_time": _utc_iso(cursor), "energy": energy})
+        if interval == ENERGY_INTERVALS["hourly"]:
+            cursor = cursor + timedelta(hours=1)
+        elif interval == ENERGY_INTERVALS["daily"]:
+            cursor = cursor + timedelta(days=1)
+        elif interval == ENERGY_INTERVALS["monthly"]:
+            cursor = _add_months(cursor.replace(tzinfo=None), 1).astimezone()
+        else:
+            raise DeviceError(f"Unsupported interval duration: {interval} minutes")
+
+    return {
+        "local_time": _normalise_local_time(raw.get("local_time")),
+        "start_date_time": start_date_time,
+        "entries": entries,
+        "interval_length": interval,
+    }
 
 
 def energy_data_request(
@@ -312,9 +364,9 @@ async def energy_history(
     start_date: date,
     end_date: date | None = None,
 ) -> dict:
-    """The device's own `get_energy_data` payload for one interval."""
+    """Historic energy, with every bucket labelled by its start time."""
     request = energy_data_request(interval_minutes, start_date, end_date)
-    return await device.raw("get_energy_data", request)
+    return shape_energy_data(await device.raw("get_energy_data", request))
 
 
 async def child_devices(device: TapoDevice) -> list:

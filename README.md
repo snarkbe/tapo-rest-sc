@@ -94,7 +94,7 @@ Start from the committed template — it is a complete, working configuration:
 | --- | --- |
 | `tapo_credentials` | Your Tapo **account** email and password — the same ones you use in the Tapo app. Devices are contacted locally over your LAN; these only authenticate you to them. |
 | `devices[].name` | Any name you like — this is what the widget's `device` field shows. Names containing a `/` are addressed on the API by their slug, which `GET /devices` publishes. |
-| `devices[].device_type` | One of `L510` `L520` `L530` `L535` `L610` `L630` `L900` `L920` `L930` `P100` `P105` `P110` `P110M` `P115` `P300` `P304` `P304M` `P316`. |
+| `devices[].device_type` | Normally one of `L510` `L520` `L530` `L535` `L610` `L630` `L900` `L920` `L930` `P100` `P105` `P110` `P110M` `P115` `P300` `P304` `P304M` `P316`. Nothing dispatches on it — the protocol is negotiated with the device — so a newer model still works, with a warning in the log. |
 | `devices[].ip_addr` | The device's address on your LAN. Give it a DHCP reservation. |
 | `devices[].substract` | Optional. The name of another configured device whose power is subtracted from this one — for plugs chained behind one another. Never goes below zero. |
 
@@ -206,7 +206,7 @@ from the code, so it is always current. `/openapi.json` has the raw schema.
 | `POST` | `/devices/{name}/light` | Set `brightness` (1–100), `hue` (0–360) with `saturation` (0–100), `color_temp` (Kelvin) and/or `effect`. |
 | `GET` | `/devices/{name}/power` | Instantaneous watts. |
 | `GET` | `/devices/{name}/energy` | Cumulative energy counters. |
-| `GET` | `/devices/{name}/energy/history` | `interval=hourly\|daily\|monthly` (default `daily`), `start_date=YYYY-MM-DD`, optional `end_date` for `hourly`. |
+| `GET` | `/devices/{name}/energy/history` | `interval=hourly\|daily\|monthly` (default `daily`), `start_date=YYYY-MM-DD`, optional `end_date` for `hourly`. Each reading comes back paired with the moment it starts. |
 | `GET` | `/devices/{name}/children` | The outlets of a power strip. |
 | `POST` | `/reload-config` | Re-read `config.json` without restarting. |
 
@@ -284,10 +284,10 @@ bundled as a binary. They have been removed and now answer `404`.
 
 `X` above is the device name, or its slug when the name contains a `/`.
 
-Two response shapes changed: `energy/history` returns the device's own
-`{data, start_timestamp, interval, local_time}` instead of the reshaped
-`{entries, start_date_time, interval_length}`, and `on`/`off` answer
-`{"name": …, "on": …}` instead of an empty body.
+One response shape changed: `on`/`off` answer `{"name": …, "on": …}` instead of
+an empty body. `energy/history` keeps the
+`{entries, start_date_time, interval_length}` shape, so every reading still
+arrives with its own start time rather than as a bare array to date yourself.
 
 ## Project Structure
 

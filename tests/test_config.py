@@ -108,14 +108,18 @@ def test_valid_api_key_is_accepted(tmp_path):
     assert not config.is_valid_api_key("z" * 32)
 
 
-def test_unknown_device_type_is_rejected(tmp_path):
+def test_unknown_device_type_warns_and_loads(tmp_path, caplog):
+    """Nothing dispatches on device_type, so a newer model must still work."""
     payload = {
         "tapo_credentials": CREDENTIALS,
-        "devices": [{**DEVICE, "device_type": "P999"}],
+        "devices": [{**DEVICE, "device_type": "P117"}],
     }
 
-    with pytest.raises(ConfigError, match="Unknown device_type"):
-        load_config(write(tmp_path, payload))
+    with caplog.at_level(logging.WARNING):
+        config = load_config(write(tmp_path, payload))
+
+    assert config.devices[0].device_type == "P117"
+    assert any("unfamiliar device_type" in r.getMessage() for r in caplog.records)
 
 
 def test_device_type_is_case_insensitive(tmp_path):
