@@ -419,9 +419,12 @@ class DeviceRegistry:
     @classmethod
     def from_config(cls, config: Config) -> "DeviceRegistry":
         credentials = Credentials(config.email, config.password)
+        # Hubs live here too, so `/devices/{hub}` and `/devices/{hub}/children`
+        # work like for any other device.
         return cls(
             devices={
-                entry.name: TapoDevice(entry, credentials) for entry in config.devices
+                entry.name: TapoDevice(entry, credentials)
+                for entry in (*config.devices, *config.hubs)
             }
         )
 

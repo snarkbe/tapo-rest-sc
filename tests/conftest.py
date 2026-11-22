@@ -104,7 +104,9 @@ class FakeDevice:
         pass
 
 
-def write_config(tmp_path: Path, devices, *, api_keys=(VALID_API_KEY,)) -> Path:
+def write_config(
+    tmp_path: Path, devices, *, api_keys=(VALID_API_KEY,), hubs=None
+) -> Path:
     payload = {
         "tapo_credentials": {"email": "user@example.com", "password": "secret"},
         "server": {
@@ -115,6 +117,8 @@ def write_config(tmp_path: Path, devices, *, api_keys=(VALID_API_KEY,)) -> Path:
         },
         "devices": devices,
     }
+    if hubs is not None:
+        payload["hubs"] = hubs
     path = tmp_path / "config.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
@@ -128,7 +132,7 @@ def build_service(config_path: Path, powers: dict) -> ServiceState:
     service.registry = DeviceRegistry(
         devices={
             entry.name: FakeDevice(entry, **powers.get(entry.name, {"power": 0}))
-            for entry in config.devices
+            for entry in (*config.devices, *config.hubs)
         }
     )
     service.init_error = None
@@ -142,8 +146,8 @@ def make_client(tmp_path):
 
     import taposc
 
-    def _make(devices, powers=None, api_keys=(VALID_API_KEY,)):
-        path = write_config(tmp_path, devices, api_keys=api_keys)
+    def _make(devices, powers=None, api_keys=(VALID_API_KEY,), hubs=None):
+        path = write_config(tmp_path, devices, api_keys=api_keys, hubs=hubs)
         service = build_service(path, powers or {})
         taposc.app.state.service = service
         # No `with` block: that would run the lifespan and hit the network.

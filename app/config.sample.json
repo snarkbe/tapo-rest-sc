@@ -20,5 +20,12 @@
             "ip_addr": "192.168.1.12",
             "substract": "Living room plug"
         }
+    ],
+    "hubs": [
+        {
+            "name": "Smart Hub",
+            "device_type": "H100",
+            "ip_addr": "192.168.1.20"
+        }
     ]
 }

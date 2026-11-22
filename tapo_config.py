@@ -11,8 +11,15 @@ of this project read, so an existing `devices.json` loads unchanged.
             { "name": "Washer", "device_type": "P115", "ip_addr": "192.168.0.45" },
             { "name": "TV", "device_type": "P110", "ip_addr": "192.168.0.224",
               "substract": "Washer" }
+        ],
+        "hubs": [
+            { "name": "Smart Hub", "device_type": "H100", "ip_addr": "192.168.0.153" }
         ]
     }
+
+`hubs` is optional. A hub has no power reading of its own, so it stays out of
+`/get_all_device_power`; its paired sensors are read from
+`/get_all_sensor_data` instead.
 """
 
 from __future__ import annotations
@@ -36,6 +43,11 @@ KNOWN_DEVICE_TYPES = (
     "P100", "P105", "P110", "P110M", "P115",
     "P300", "P304", "P304M", "P316",
 )  # fmt: skip
+
+# Hubs this project was written against. Same rule as above: unfamiliar is a
+# warning. The H200 speaks a different (camera) protocol and is not expected to
+# answer the child-list request the H100 does.
+KNOWN_HUB_TYPES = ("H100",)
 
 MIN_API_KEY_LENGTH = 32
 
@@ -104,6 +116,9 @@ class Config:
     password: str
     # Valid devices only, in config order -- what the registry connects to.
     devices: tuple[DeviceEntry, ...] = ()
+    # Sensor hubs, in config order. Connected like devices, but never polled
+    # for power.
+    hubs: tuple[DeviceEntry, ...] = ()
     api_keys: tuple[ApiKey, ...] = ()
     # Every entry in config order, valid or not, so the aggregated power
     # response keeps reporting unusable entries in place.
@@ -258,6 +273,9 @@ def _parse_devices(
 ) -> tuple[tuple[DeviceEntry, ...], tuple[DeviceEntry | InvalidDeviceEntry, ...]]:
     devices = raw.get("devices")
     if devices is None:
+        if raw.get("hubs"):
+            # A sensors-only setup: nothing to report power for.
+            return (), ()
         raise ConfigError("No 'devices' key in the configuration file")
     if not isinstance(devices, list):
         raise ConfigError("'devices' must be an array")
@@ -340,10 +358,49 @@ def _parse_devices(
         parsed.append(device)
         items.append(device)
 
-    if not parsed:
+    if not parsed and not raw.get("hubs"):
         raise ConfigError("No usable devices found in the configuration file")
 
     return tuple(parsed), tuple(items)
+
+
+def _parse_hubs(raw: dict, taken: set[str]) -> tuple[DeviceEntry, ...]:
+    """The optional `hubs` array. Stricter than `devices`: a bad entry is an error.
+
+    `devices` skips bad entries because the power response reports them in
+    place; nothing reports a skipped hub, so it would vanish silently.
+    """
+    hubs = raw.get("hubs")
+    if hubs is None:
+        return ()
+    if not isinstance(hubs, list):
+        raise ConfigError("'hubs' must be an array")
+
+    parsed: list[DeviceEntry] = []
+    for entry in hubs:
+        if not isinstance(entry, dict):
+            raise ConfigError(f"Every entry of 'hubs' must be an object: {entry!r}")
+        name = entry.get("name")
+        ip_addr = entry.get("ip_addr")
+        if not name or not ip_addr:
+            raise ConfigError(f"Hub entry needs a 'name' and an 'ip_addr': {entry}")
+        if name in taken:
+            # Hubs share the /devices/{name} namespace with plugs.
+            raise ConfigError(f"Duplicate device name: '{name}'")
+        taken.add(name)
+
+        hub_type = str(entry.get("device_type") or "H100").upper()
+        if hub_type not in KNOWN_HUB_TYPES:
+            logger.warning(
+                "Hub '%s' has an unfamiliar device_type '%s'. Continuing, but "
+                "only the %s child-device list is known to work.",
+                name,
+                hub_type,
+                ", ".join(KNOWN_HUB_TYPES),
+            )
+        parsed.append(DeviceEntry(name=name, device_type=hub_type, ip_addr=str(ip_addr)))
+
+    return tuple(parsed)
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -358,6 +415,7 @@ def load_config(path: Path | None = None) -> Config:
     email, password = _parse_credentials(raw, resolved)
     api_keys = _parse_api_keys(raw)
     devices, items = _parse_devices(raw)
+    hubs = _parse_hubs(raw, {device.name for device in devices})
 
     if not api_keys:
         logger.warning(
@@ -367,13 +425,16 @@ def load_config(path: Path | None = None) -> Config:
             resolved,
         )
 
-    logger.info("Loaded %d device(s) from %s.", len(devices), resolved)
+    logger.info(
+        "Loaded %d device(s) and %d hub(s) from %s.", len(devices), len(hubs), resolved
+    )
 
     return Config(
         path=resolved,
         email=email,
         password=password,
         devices=devices,
+        hubs=hubs,
         api_keys=api_keys,
         items=items,
     )

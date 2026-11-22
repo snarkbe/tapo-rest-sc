@@ -5,6 +5,8 @@ via python-kasa. It exposes:
 
   * `/get_all_device_power` -- the aggregated reading a Homepage dashboard
     widget consumes, unauthenticated and unchanged since the Flask days.
+  * `/get_all_sensor_data` -- the same idea for the temperature, humidity and
+    other sensors paired with a Tapo hub, also unauthenticated.
   * `/devices/...` -- a REST surface for controlling and querying individual
     devices, documented on `/docs`.
 
@@ -22,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import tapo_api
 import tapo_power
+import tapo_sensors
 from tapo_devices import ActionError, DeviceError
 from tapo_state import ServiceState
 
@@ -63,6 +66,7 @@ app.add_exception_handler(DeviceError, tapo_api.device_error_handler)
 app.add_exception_handler(ActionError, tapo_api.action_error_handler)
 
 app.include_router(tapo_power.router)
+app.include_router(tapo_sensors.router)
 app.include_router(tapo_api.router)
 
 

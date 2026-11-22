@@ -25,6 +25,7 @@ My goal was to retrieve data usage for several Tapo smart plugs in 1 single resp
 ## Features
 
 - One endpoint returning the current power of every configured device, plus a computed total
+- One endpoint returning every temperature, humidity and leak sensor paired with a Tapo **H100 hub**
 - Chained plugs: subtract one device's consumption from another's, so nothing is counted twice
 - A REST surface for controlling and querying individual devices, documented automatically on `/docs`
 - Speaks to devices **directly over your LAN** with [python-kasa](https://github.com/python-kasa/python-kasa) — no bundled binary, no sidecar process, no cloud round-trip
@@ -86,6 +87,9 @@ Start from the committed template — it is a complete, working configuration:
         { "name": "Washer",           "device_type": "P115", "ip_addr": "192.168.1.11" },
         { "name": "TV corner",        "device_type": "P110", "ip_addr": "192.168.1.12",
           "substract": "Living room plug" }
+    ],
+    "hubs": [
+        { "name": "Smart Hub",        "device_type": "H100", "ip_addr": "192.168.1.20" }
     ]
 }
 ```
@@ -97,6 +101,7 @@ Start from the committed template — it is a complete, working configuration:
 | `devices[].device_type` | Normally one of `L510` `L520` `L530` `L535` `L610` `L630` `L900` `L920` `L930` `P100` `P105` `P110` `P110M` `P115` `P300` `P304` `P304M` `P316`. Nothing dispatches on it — the protocol is negotiated with the device — so a newer model still works, with a warning in the log. |
 | `devices[].ip_addr` | The device's address on your LAN. Give it a DHCP reservation. |
 | `devices[].substract` | Optional. The name of another configured device whose power is subtracted from this one — for plugs chained behind one another. Never goes below zero. |
+| `hubs` | Optional. Tapo hubs whose paired sensors (T310, T315, T300, …) `/get_all_sensor_data` reports. Same `name` / `device_type` / `ip_addr` keys; `device_type` defaults to `H100`. Only the hub needs an address — the sensors talk to it over radio, not to your LAN. A hub has no power reading, so it never appears in `/get_all_device_power`. With a hub configured, `devices` may be left out. |
 
 ### Do I need an API key?
 
@@ -209,6 +214,53 @@ This is what the Homepage widget at the top of this README calls. It takes no
 
 - **GET `/`** — redirects to `/get_all_device_power`.
 
+### Hub sensors — no API key needed
+
+- **GET `/get_all_sensor_data`**
+  A JSON array with one entry per sensor paired with a configured hub, in hub
+  order and then in the order the hub lists them. The hub is asked once for all
+  of them; the sensors themselves are never contacted.
+
+  ```json
+  [
+    { "device": "Tapo T310", "hub": "Smart Hub", "model": "T310", "status": "success",
+      "data": { "temperature": 20.8, "temperature_unit": "celsius", "temperature_warning": false,
+                "humidity": 41, "humidity_warning": false,
+                "low_battery": false, "online": true, "summary": "20.8°C | 41%" } },
+    { "device": "Water Leak Sensor", "hub": "Smart Hub", "model": "T300", "status": "success",
+      "data": { "water_leak": false, "water_leak_status": "normal",
+                "low_battery": false, "online": true, "summary": "Dry" } }
+  ]
+  ```
+
+  - Fields appear only when the sensor reports them: a leak sensor has no
+    `temperature`. Contact (T110) and motion (T100) sensors get `open` / `motion`.
+  - `temperature_warning` / `humidity_warning` are `true` when the reading is
+    outside the comfort range set in the Tapo app — what shows it in red there.
+  - `online: false` means the sensor stopped reporting; the values are the last
+    ones the hub kept.
+  - `summary` exists for widgets that only show one label.
+  - An unreachable hub is a single `"status": "failed"` entry named after it.
+
+  A Homepage widget for it:
+
+  ```
+  - Climate:
+      - Tapo sensors:
+          icon: mdi-thermometer
+          widgets:
+              - type: customapi
+                url:  http://<taporestsc_url>:5000/get_all_sensor_data
+                refreshInterval: 60000 # sensors report every few seconds to minutes; no need to hammer the hub
+                display: dynamic-list
+                mappings:
+                      name: device
+                      label: data.summary
+  ```
+
+  Only the H100 is supported. The H200 speaks Tapo's camera protocol, which
+  lists its children differently; it will show up as a failed entry.
+
 ### Device routes — API key required
 
 The device is a path segment, and every route expects an
@@ -233,7 +285,7 @@ from the code, so it is always current. `/openapi.json` has the raw schema.
 | `GET` | `/devices/{name}/power` | Instantaneous watts. |
 | `GET` | `/devices/{name}/energy` | Cumulative energy counters. |
 | `GET` | `/devices/{name}/energy/history` | `interval=hourly\|daily\|monthly` (default `daily`), `start_date=YYYY-MM-DD`, optional `end_date` for `hourly`. Each reading comes back paired with the moment it starts. |
-| `GET` | `/devices/{name}/children` | The outlets of a power strip. |
+| `GET` | `/devices/{name}/children` | The outlets of a power strip, or the raw sensor list of a hub. |
 | `POST` | `/reload-config` | Re-read `config.json` without restarting. |
 
 A device only accepts what it physically supports — asking a plug to change
@@ -326,6 +378,7 @@ arrives with its own start time rather than as a bare array to date yourself.
 ├── tapo_config.py          # Configuration loading and validation
 ├── tapo_devices.py         # python-kasa device layer and operations
 ├── tapo_power.py           # /get_all_device_power
+├── tapo_sensors.py         # /get_all_sensor_data
 ├── tapo_api.py             # /devices/... and /reload-config
 ├── tapo_state.py           # Shared config + device registry
 ├── tests/                  # Test suite

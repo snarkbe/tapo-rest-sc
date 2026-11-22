@@ -256,3 +256,66 @@ def test_slugs_are_ascii_lowercase_and_collapse_punctuation():
     assert slugify("  --Cave--  ") == "cave"
     # Nothing ASCII to work with: no slug, and the caller warns.
     assert slugify("日本") == ""
+
+
+HUB = {"name": "Smart Hub", "device_type": "H100", "ip_addr": "192.168.1.20"}
+
+
+def test_hubs_are_optional_and_parsed_apart_from_devices(tmp_path):
+    config = load_config(
+        write(
+            tmp_path,
+            {"tapo_credentials": CREDENTIALS, "devices": [DEVICE], "hubs": [HUB]},
+        )
+    )
+
+    assert [d.name for d in config.devices] == ["Washer"]
+    assert [h.name for h in config.hubs] == ["Smart Hub"]
+    # The power response is built from `items`, so a hub must never land there.
+    assert [i.name for i in config.items] == ["Washer"]
+
+
+def test_a_hub_alone_is_a_valid_configuration(tmp_path):
+    config = load_config(write(tmp_path, {"tapo_credentials": CREDENTIALS, "hubs": [HUB]}))
+
+    assert config.devices == ()
+    assert len(config.hubs) == 1
+
+
+def test_hub_type_defaults_to_h100(tmp_path):
+    hub = {"name": "Smart Hub", "ip_addr": "192.168.1.20"}
+    config = load_config(write(tmp_path, {"tapo_credentials": CREDENTIALS, "hubs": [hub]}))
+
+    assert config.hubs[0].device_type == "H100"
+
+
+def test_unknown_hub_type_warns_and_loads(tmp_path, caplog):
+    hub = {**HUB, "device_type": "h200"}
+    with caplog.at_level(logging.WARNING):
+        config = load_config(
+            write(tmp_path, {"tapo_credentials": CREDENTIALS, "hubs": [hub]})
+        )
+
+    assert config.hubs[0].device_type == "H200"
+    assert "unfamiliar device_type 'H200'" in caplog.text
+
+
+def test_a_hub_cannot_share_a_name_with_a_device(tmp_path):
+    hub = {**HUB, "name": "Washer"}
+    with pytest.raises(ConfigError, match="Duplicate device name"):
+        load_config(
+            write(
+                tmp_path,
+                {"tapo_credentials": CREDENTIALS, "devices": [DEVICE], "hubs": [hub]},
+            )
+        )
+
+
+def test_a_hub_without_an_address_is_an_error(tmp_path):
+    with pytest.raises(ConfigError, match="ip_addr"):
+        load_config(
+            write(
+                tmp_path,
+                {"tapo_credentials": CREDENTIALS, "hubs": [{"name": "Smart Hub"}]},
+            )
+        )
