@@ -45,6 +45,12 @@ def test_sample_config_demonstrates_chaining():
     assert chained[0].substract in {d.name for d in config.devices}
 
 
+def test_sample_config_demonstrates_a_hub():
+    config = load_config(SAMPLE)
+
+    assert [hub.device_type for hub in config.hubs] == ["H100"]
+
+
 def test_sample_config_carries_no_real_secrets():
     text = SAMPLE.read_text(encoding="utf-8")
 
